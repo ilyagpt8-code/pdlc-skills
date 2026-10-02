@@ -39,10 +39,36 @@ def load(folder: Path):
     return out
 
 
+def _refers(text, m):
+    """Ссылается ли text на письмо m по имени файла или по номеру («004-...», «письмо 004»)."""
+    stem = m["name"][:-3]
+    if stem in text or m["name"] in text:
+        return True
+    return bool(re.search(rf"(?<!\d){m['n']:03d}(?![\d])", text))
+
+
+def _mentions_role(text, role):
+    """Роль role названа в письме как просящая/ждущая («role просит/ждёт»)."""
+    return bool(re.search(rf"\b{re.escape(role)}\w*\s+(?:\w+\s+)?(?:просит|ждёт|ждет|ждут|просят)", text, re.I))
+
+
 def answered(msgs, i):
-    """Ответил ли адресат письма i отправителю после него."""
+    """Письмо i отвечено, если после него адресат: написал автору; ИЛИ любое письмо
+    ссылается на это письмо по номеру/имени файла; ИЛИ (письмо просило ответить третьему:
+    «Z просит/ждёт») адресат написал Z."""
     m = msgs[i]
-    return any(x["frm"] == m["to"] and x["to"] in (m["frm"], "all") for x in msgs[i + 1:])
+    later = msgs[i + 1:]
+    for x in later:
+        if x["frm"] == m["to"] and x["to"] in (m["frm"], "all"):
+            return True
+        if _refers(x["text"], m):
+            return True
+    third = {x["frm"] for x in msgs} | {x["to"] for x in msgs}
+    for z in third - {m["to"], "all"}:
+        if z != m["frm"] and _mentions_role(m["text"], z) and any(
+                x["frm"] == m["to"] and x["to"] == z for x in later):
+            return True
+    return False
 
 
 def analyze(msgs, roles_extra=(), last=5):

@@ -22,6 +22,8 @@ KV_RE = re.compile(rf"([^\s=,:()\[\]]+)\s*=\s*({NUM})(?![\w.,])")
 WAS_RE = re.compile(rf"\(\s*было\s*:?\s*({NUM})\s*\)", re.I)
 SRC_RE = re.compile(r"\[[^\]]*источник[^\]]*\]", re.I)
 TOK_RE = re.compile(r"токены\s+за\s+отрезок\s*=\s*(\d+)", re.I)
+TARGET_RE = re.compile(rf"(?:цель|целев[а-яё]*|target)\s*(?:метрик[а-яё]*|значени[а-яё]*|диапазон)?\s*"
+                       rf"(?:[:=]\s*)?(?:[^\s\d≤<=:]+\s*)?(?:≤|<=|=|<)?\s*({NUM})", re.I)
 SKIP_NAMES = {"всего", "отрезок", "токены"}
 # Haiku 4.5, USD за токен
 P_IN, P_OUT, P_CR, P_CW = 1e-6, 5e-6, 0.10e-6, 1.25e-6
@@ -67,13 +69,34 @@ def series(points):
     -> (точки ряда, шаги [(начало, конец)])."""
     segs = [p for p in points if p["kind"] == "seg"]
     use = segs or points
+    # повтор того же значения с тем же источником - одна и та же проверка, не новая точка
+    dedup = []
+    for p in use:
+        if dedup and p["src"] is not None and (p["value"], p["src"]) == (dedup[-1]["value"], dedup[-1]["src"]):
+            continue
+        dedup.append(p)
+    use = dedup
     steps, prev = [], None
     for p in use:
-        start = p["was"] if p["was"] is not None else prev
+        # «(было X)» без предыдущей точки точку не создаёт
+        start = p["was"] if (p["was"] is not None and prev is not None) else prev
         if start is not None:
             steps.append((start, p["value"]))
         prev = p["value"]
     return use, steps
+
+
+def find_targets(text: str, target):
+    """Целевые значения в журнале, отличные от --target."""
+    found = []
+    for line in text.splitlines():
+        for m in TARGET_RE.finditer(line.replace("*", "")):
+            if not re.search(r"[:=≤<]", m.group(0)):
+                continue
+            v = num(m.group(1))
+            if v != target and v not in found:
+                found.append(v)
+    return found
 
 
 def is_flat(start, end):
@@ -94,6 +117,8 @@ def analyze_metric(points, target):
             flags.append("РОСТ")
         if len(steps) >= 2 and all(is_flat(a, b) for a, b in steps[-2:]):
             flags.append("ПЛАТО")
+    if len(steps) <= 1 and last <= target and vals and (len(vals) <= 2):
+        flags.append("НОЛЬ С ПЕРВОЙ")
     if any(p["src"] is None for p in points):
         flags.append("БЕЗ ИСТОЧНИКА")
     rate = None
@@ -125,10 +150,16 @@ def parse_stats(text: str):
     return (t if found else None), (cost if cost > 0 else None)
 
 
-def verdict(results):
+def verdict(results, changed=None, target=0.0):
+    if changed:
+        return (f"цель метрики изменена в журнале (было {fmt(target)}, стало {', '.join(fmt(x) for x in changed)}) - "
+                "менять цель может только принимающий по заданию; проверь, есть ли его решение.")
     if not results:
         return "метрики нет - команда идёт вслепую. Заведи строку «метрика: имя=число [источник: ...]»."
     if all("ЦЕЛЬ" in r["flags"] for r in results.values()):
+        if any("НОЛЬ С ПЕРВОЙ" in r["flags"] for r in results.values()):
+            return ("цель с первой проверки - подозрительно: попроси считающего показать список проверок "
+                    "и проверить крайние случаи и каждый пример из задания/спецификации отдельной проверкой.")
         return "цель достигнута - проверь приёмку."
     act = [r for r in results.values() if "ЦЕЛЬ" not in r["flags"]]
     if any("РОСТ" in r["flags"] for r in act):
@@ -168,6 +199,10 @@ def main(argv=None) -> int:
     for p in pts:
         by.setdefault(p["name"], []).append(p)
     results = {n: analyze_metric(ps, a.target) for n, ps in by.items()}
+    changed = find_targets(text, a.target)
+    if changed:
+        for r in results.values():
+            r["flags"].append("ЦЕЛЬ ИЗМЕНЕНА")
     L = []
     if not results:
         L += ["!" * 60, "МЕТРИКИ НЕТ - КОМАНДА ИДЁТ ВСЛЕПУЮ", "!" * 60]
@@ -200,7 +235,8 @@ def main(argv=None) -> int:
         cost = t["out"] * P_OUT + t["in"] * P_IN + t["cr"] * P_CR + t["cw"] * P_CW
         est = True
     if t:
-        L.append(f"Токены (stats): вывод {t['out']}, вход {t['in']}, кэш чтение {t['cr']}, запись {t['cw']}")
+        L.append(f"Токены (числа из stats.md): вывод {t['out']}, вход {t['in']}, кэш чтение {t['cr']}, запись {t['cw']}")
+        L.append("  подсказка: в строку отрезка бери токены и стоимость отсюда.")
     if seg_tokens:
         L.append(f"Токены по строкам отрезков: {seg_tokens}")
     if cost is not None:
@@ -220,7 +256,7 @@ def main(argv=None) -> int:
             ok = cost + need <= a.budget_usd
             L.append(f"Бюджет ${a.budget_usd:.2f}: потрачено ${cost:.2f}, до цели ещё ~${need:.2f} "
                      f"({main_r['left']} отрезк. по ${per:.2f}) - " + ("хватит." if ok else "НЕ хватит."))
-    L.append("вывод: " + verdict(results))
+    L.append("вывод: " + verdict(results, changed, a.target))
     print("\n".join(L))
     return 0
 

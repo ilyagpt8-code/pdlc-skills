@@ -110,14 +110,14 @@ def test_progress_going(tmp_path, capsys):
 def test_progress_plateau_big_and_small(tmp_path, capsys):
     p = journal(tmp_path, "\n".join([
         "метрика: ошибки=100 [источник: a]",
-        "метрика: ошибки=98 [источник: a]",
-        "метрика: ошибки=97 [источник: a]",
+        "метрика: ошибки=98 [источник: b]",
+        "метрика: ошибки=97 [источник: c]",
     ]))
     out = run_p(capsys, p)
     assert "ПЛАТО" in out and "плато - требуй смены способа" in out
-    p2 = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=10 [источник: a]\nметрика: м=10 [источник: a]\n")
+    p2 = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=10 [источник: b]\nметрика: м=10 [источник: c]\n")
     assert "ПЛАТО" in run_p(capsys, p2)
-    p3 = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=9 [источник: a]\nметрика: м=8 [источник: a]\n")
+    p3 = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=9 [источник: b]\nметрика: м=8 [источник: c]\n")
     assert "ПЛАТО" not in run_p(capsys, p3)
 
 
@@ -128,7 +128,7 @@ def test_progress_growth(tmp_path, capsys):
 
 
 def test_progress_goal_and_target(tmp_path, capsys):
-    p = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=3 [источник: a]\n")
+    p = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=8 [источник: b]\nметрика: м=3 [источник: c]\n")
     assert "ЦЕЛЬ" in run_p(capsys, p, "--target", 5)
     assert "проверь приёмку" in run_p(capsys, p, "--target", 5)
     assert "ЦЕЛЬ" not in run_p(capsys, p)
@@ -171,3 +171,112 @@ def test_progress_real(capsys):
     out = run_p(capsys, REAL / "journal.md", "--stats", REAL / "stats.md", "--budget-usd", 5)
     assert "вопросов_без_ответа" in out
     assert out.strip().splitlines()[-1].startswith("вывод:")
+
+
+# ---------------------------------------------------------------- доработки по итогам 003
+def test_mail_answered_by_reference(tmp_path):
+    p = mk_mail(tmp_path, [
+        ("001-a-to-b.md", "Прошу сделать X?"),
+        ("002-b-to-c.md", "Сделал по письму 001-a-to-b.md"),
+    ])
+    assert "a ждёт b" not in run_mail(p)
+
+
+def test_mail_answered_by_number(tmp_path):
+    p = mk_mail(tmp_path, [
+        ("001-a-to-b.md", "Прошу сделать X?"),
+        ("002-b-to-c.md", "Закрыл вопрос из письма 001."),
+    ])
+    assert "a ждёт b" not in run_mail(p)
+
+
+def test_mail_answered_third_party(tmp_path):
+    p = mk_mail(tmp_path, [
+        ("001-ch-to-ex.md", "Привет! Producer просит тебя проверить спецификацию?"),
+        ("002-ex-to-producer.md", "Проверил, вот результат."),
+    ])
+    assert "ch ждёт ex" not in run_mail(p)
+
+
+def test_mail_third_party_not_written_still_waits(tmp_path):
+    p = mk_mail(tmp_path, [
+        ("001-ch-to-ex.md", "Привет! Producer просит тебя проверить спецификацию?"),
+        ("002-ex-to-other.md", "Занят."),
+    ])
+    assert "ch ждёт ex" in run_mail(p)
+
+
+def test_mail_real_003_choreographer_not_waiting():
+    r003 = Path(__file__).resolve().parent.parent / "runs" / "003" / "spec"
+    if not r003.is_dir():
+        pytest.skip("нет runs/003")
+    assert "choreographer ждёт expert" not in run_mail(r003)
+
+
+def test_progress_was_without_prior_point(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([
+        "метрика: q=8 (было 0) [источник: проверка 1]",
+        "метрика: q=2 [источник: проверка 2]"]))
+    out = run_p(capsys, j)
+    assert "0 -> 8" not in out and "шаг 1: 8 -> 2" in out
+
+
+def test_progress_duplicate_same_source_not_point(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([
+        "метрика: q=8 [источник: проверка 1]",
+        "метрика: q=8 [источник: проверка 1]",
+        "метрика: q=2 [источник: проверка 2]"]))
+    out = run_p(capsys, j)
+    assert "шаг 2" not in out and "шаг 1: 8 -> 2" in out and "ПЛАТО" not in out
+
+
+def test_progress_same_value_other_source_is_point(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([
+        "метрика: q=8 [источник: проверка 1]",
+        "метрика: q=8 [источник: проверка 2]"]))
+    assert "шаг 1: 8 -> 8" in run_p(capsys, j)
+
+
+def test_progress_zero_from_first(tmp_path, capsys):
+    j = journal(tmp_path, "метрика: q=0 [источник: проверка 1]")
+    out = run_p(capsys, j)
+    assert "НОЛЬ С ПЕРВОЙ" in out
+    assert "цель с первой проверки - подозрительно" in out.strip().splitlines()[-1]
+
+
+def test_progress_no_zero_from_first_when_gradual(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([
+        "метрика: q=5 [источник: a]", "метрика: q=3 [источник: b]", "метрика: q=0 [источник: c]"]))
+    out = run_p(capsys, j)
+    assert "НОЛЬ С ПЕРВОЙ" not in out and "цель достигнута" in out
+
+
+def test_progress_target_changed(tmp_path, capsys):
+    for i, txt in enumerate(["цель ≤4", "target ≤4", "целевой=4", "целевая метрика: q≤4"]):
+        j = journal(tmp_path, f"метрика: q=8 [источник: a]\n{txt}\nметрика: q=2 [источник: b]")
+        out = run_p(capsys, j)
+        assert "ЦЕЛЬ ИЗМЕНЕНА" in out, txt
+        assert "(было 0, стало 4)" in out.strip().splitlines()[-1], txt
+
+
+def test_progress_target_same_not_changed(tmp_path, capsys):
+    j = journal(tmp_path, "цель ≤4\nметрика: q=8 [источник: a]\nметрика: q=6 [источник: b]")
+    assert "ЦЕЛЬ ИЗМЕНЕНА" not in run_p(capsys, j, "--target", 4)
+
+
+def test_progress_tokens_hint(tmp_path, capsys):
+    j = journal(tmp_path, "метрика: q=8 [источник: a]")
+    s = tmp_path / "stats.md"
+    s.write_text("токены: вывод 10; вход без кэша 20; вход через кэш: чтение 30, запись 40\n", encoding="utf-8")
+    out = run_p(capsys, j, "--stats", s)
+    assert "числа из stats.md" in out and "в строку отрезка бери токены и стоимость отсюда" in out
+
+
+def test_progress_real_003(capsys):
+    base = Path(__file__).resolve().parent.parent / "runs" / "003"
+    if not base.is_dir():
+        pytest.skip("нет runs/003")
+    out = run_p(capsys, base / "spec" / "journal.md")
+    assert "0 -> 8" not in out and "ЦЕЛЬ ИЗМЕНЕНА" in out
+    out = run_p(capsys, base / "app" / "journal.md")
+    assert "НОЛЬ С ПЕРВОЙ" in out
