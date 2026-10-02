@@ -69,15 +69,23 @@ If the input temperature is below absolute zero after conversion to the source s
 
 ## Output Format
 
-- **Success**: Output the converted temperature to stdout as a decimal number with 2 decimal places (default)
+- **Success**: Output the converted temperature to stdout as a decimal number with exactly 2 decimal places
 - **Error**: Output error message to stderr
 - **No output on error**: Only the message goes to stderr; nothing to stdout
 
 ### Output Examples
 
 - `32.00` (normal conversion result)
-- `-273.15` (very cold temperature)
-- `1.23e2` (if output uses scientific notation, though standard decimal is preferred)
+- `0.00` (zero, always normalized without minus sign)
+- `1000000.00` (very large number, always with 2 decimal places, never scientific notation)
+- `0.00` (very small number like 1e-10, always exactly 2 decimal places)
+
+### Output Format Details
+
+- Output precision: always exactly 2 decimal places, even for very large or very small numbers
+- Negative zero (-0.00) is normalized to `0.00` (without minus sign)
+- Examples: `1000000.00`, `0.00`, `-273.15`
+- No scientific notation in output (always standard decimal format)
 
 ## Exit Codes and Error Messages
 
@@ -102,7 +110,7 @@ All conversions must use these standard formulas:
 | F | K | `((F - 32) × 5/9) + 273.15` |
 | K | F | `(K - 273.15) × 9/5 + 32` |
 
-Same-scale conversions (e.g., C to C) should return the input value unchanged.
+Same-scale conversions (e.g., C to C) should return the input value in the standard output format (exactly 2 decimal places). For example, if input is `0.001 C C`, the output should be `0.00` (rounded to 2 decimal places).
 
 ## Special Cases and Notes
 
@@ -112,23 +120,39 @@ Same-scale conversions (e.g., C to C) should return the input value unchanged.
 - Exact positioning: first argument is VALUE, second is FROM, third is TO
 - No flag-based syntax (no `--from`, `--to`, etc.)
 
-### Precision
+### Precision and Rounding
 
-- Output precision: 2 decimal places by default
+- Output precision: 2 decimal places using round-half-up method (standard rounding: 0.5 and above rounds away from zero)
+- Examples of rounding: 32.125°F → 32.13 (round up), 32.124°F → 32.12 (round down), 32.115°F → 32.12 (round up)
 - Intermediate calculations should maintain precision (use double-precision floating-point or equivalent)
-- Rounding follows standard rules (round to nearest, half away from zero, or implementation-defined for edge cases)
 
 ### Error Behavior
 
 - Errors are printed to stderr
 - Only one error is reported per invocation
-- Error checking order: argument count → number format → scale validity → absolute zero constraint
+- Error checking order (report first error encountered):
+  1. Argument count (must be exactly 3)
+  2. VALUE numeric format (must be parseable as a number)
+  3. Scale codes (FROM and TO must be in {C, F, K})
+  4. Absolute zero constraint (VALUE must not be below minimum for its scale)
 
 ### Absolute Zero Validation
 
-The absolute zero constraint is checked after understanding which scale the input uses (FROM scale). The utility must reject inputs that, when converted to the FROM scale internally or conceptually, would violate the absolute zero limit.
+The absolute zero constraint is checked after understanding which scale the input uses (FROM scale). The utility must reject inputs that fall below the absolute zero minimum for their scale.
 
-Example: If a user provides `K -100 C`, the utility recognizes that -100 K is below absolute zero (Kelvin scale) and rejects it with error code 3.
+**Validation rule**: Input temperature must not be below the minimum for its scale:
+- Celsius: must be ≥ -273.15
+- Fahrenheit: must be ≥ -459.67
+- Kelvin: must be ≥ 0
+
+**Floating-point tolerance**: Floating-point representation errors within ±1e-9 of the boundary are acceptable. This allows boundary values like -273.15°C to be accepted even if floating-point arithmetic produces -273.1500000001.
+
+**Examples**:
+- `-273.15` C → Accepted (exactly at boundary)
+- `-273.1500000001` C → Accepted (within ±1e-9 tolerance)
+- `-273.16` C → Rejected (clearly below minimum)
+- `-459.67` F → Accepted (exactly at boundary)
+- `0` K → Accepted (exactly at boundary)
 
 ## Implementation Notes
 
@@ -136,11 +160,9 @@ These details are left to the implementation team:
 
 - Choice of programming language
 - Arithmetic precision handling (IEEE 754 double vs. other methods)
-- Exact boundary behavior for -273.15°C and -459.67°F
-- Error message formatting variations
+- Error message formatting variations (exact wording, capitalization, etc.)
 - Argument parsing method (getopt, manual parsing, etc.)
-- Handling of trailing/leading whitespace in scales (should be accepted or rejected)
-- Behavior with very large numbers or extreme scientific notation
+- Handling of trailing/leading whitespace in scale codes (may trim or reject)
 
 ## Testing Expectations
 
