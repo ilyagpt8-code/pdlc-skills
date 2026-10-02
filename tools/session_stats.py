@@ -5,9 +5,13 @@
   summary роль=путь [роль=путь ...] [--since ISO] [--until ISO] [--json]
   show роль#N путь          (или: show роль#N роль=путь)
 
-Только стандартная библиотека. Весь разбор формата журнала - в функции
-parse_line(); для облачных сессий с другим форматом правится только она.
-Номер записи N - порядковый номер непустой строки журнала (с 1).
+Только стандартная библиотека. Два формата, определяются по содержимому файла:
+  1) JSONL собственного журнала Claude Code (parse_line);
+  2) JSON-ответ list_events облачной сессии: {"data":[...]}, возможно в обёртке
+     {"ccr":{...}}, либо список страниц ответов (parse_event).
+Весь разбор формата - в parse_line()/parse_event()/read_journal().
+Номер записи N - порядковый номер непустой строки журнала (JSONL) или события
+в data[] (list_events), с 1.
 """
 from __future__ import annotations
 
@@ -108,25 +112,125 @@ def parse_line(obj: dict, n: int):
     return rec
 
 
+def parse_event(ev, n: int):
+    """Разбор одного события list_events -> запись (как parse_line) или None.
+
+    Событие: {"created_at":..., "<вид>": {"uuid":..., "internal_anthropic_catchall": {...}}}.
+    Нужны виды user, assistant, result; остальные (system, env_manager_log, ...) -> None.
+    Для result запись имеет kind="result" и поле "result" с итогами хода.
+    """
+    if not isinstance(ev, dict):
+        return None
+    kind = next((k for k in ev if k != "created_at"), None)
+    if kind not in ("user", "assistant", "result"):
+        return None
+    payload = ev.get(kind)
+    if not isinstance(payload, dict):
+        return None
+    cc = payload.get("internal_anthropic_catchall")
+    if not isinstance(cc, dict):
+        cc = payload
+    ts = ev.get("created_at") or cc.get("timestamp")
+    if kind == "result":
+        mu = cc.get("modelUsage") if isinstance(cc.get("modelUsage"), dict) else {}
+        num = lambda v: v if isinstance(v, (int, float)) else 0
+        tok = {"output_tokens": 0, "input_tokens": 0,
+               "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        for m in mu.values():
+            if not isinstance(m, dict):
+                continue
+            tok["output_tokens"] += int(num(m.get("outputTokens")))
+            tok["input_tokens"] += int(num(m.get("inputTokens")))
+            tok["cache_read_input_tokens"] += int(num(m.get("cacheReadInputTokens")))
+            tok["cache_creation_input_tokens"] += int(num(m.get("cacheCreationInputTokens")))
+        if not mu and isinstance(cc.get("usage"), dict):
+            u = cc["usage"]
+            for k in tok:
+                tok[k] = int(num(u.get(k)))
+        return {"n": n, "kind": "result", "ts": _parse_ts(ts), "text": "", "human": False,
+                "tools": [], "results": [], "msg_id": None, "usage": None, "has_thinking": False,
+                "result": {"tokens": tok, "models": sorted(mu),
+                           "cost": cc.get("total_cost_usd") if isinstance(cc.get("total_cost_usd"), (int, float)) else None,
+                           "duration_ms": cc.get("duration_ms") if isinstance(cc.get("duration_ms"), (int, float)) else None,
+                           "num_turns": cc.get("num_turns") if isinstance(cc.get("num_turns"), (int, float)) else None}}
+    if not isinstance(cc.get("message"), dict):
+        return None
+    return parse_line({"type": kind, "timestamp": ts, "message": cc["message"],
+                       "isMeta": cc.get("isMeta")}, n)
+
+
+def _unwrap_pages(doc):
+    """list_events-ответ(ы) -> список событий или None, если это не list_events."""
+    def events_of(x):
+        if isinstance(x, dict) and isinstance(x.get("ccr"), dict):
+            x = x["ccr"]
+        if isinstance(x, dict) and isinstance(x.get("data"), list):
+            return x["data"]
+        return None
+    ev = events_of(doc)
+    if ev is not None:
+        return ev
+    if isinstance(doc, list) and doc:
+        pages = [events_of(x) for x in doc]
+        if all(p is not None for p in pages):
+            return [e for p in pages for e in p]
+        if all(isinstance(x, dict) and "created_at" in x for x in doc):
+            return doc          # склеенный список событий
+    return None
+
+
+def _read_events(events):
+    recs, seen, total, skipped = [], set(), 0, 0
+    for e in events:
+        uid = None
+        if isinstance(e, dict):
+            k = next((k for k in e if k != "created_at"), None)
+            if k and isinstance(e.get(k), dict):
+                uid = e[k].get("uuid")
+        if uid:                       # страницы могли пересечься
+            if uid in seen:
+                continue
+            seen.add(uid)
+        total += 1
+        r = parse_event(e, total)
+        if r is None:
+            skipped += 1
+        else:
+            recs.append(r)
+    return recs, total, skipped
+
+
 def read_journal(path: str):
-    """Читает файл -> (records, total_lines, skipped). Устойчив к мусору."""
-    recs, total, skipped = [], 0, 0
+    """Читает файл -> (records, total, skipped). Формат определяется по содержимому.
+
+    total - число непустых строк (JSONL) или событий (list_events). Устойчив к мусору.
+    """
     with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            total += 1
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                skipped += 1
-                continue
-            r = parse_line(obj, total)
-            if r is None:
-                skipped += 1
-            else:
-                recs.append(r)
+        text = f.read()
+    st = text.lstrip()
+    if st[:1] in "[{":
+        try:
+            events = _unwrap_pages(json.loads(st))
+        except json.JSONDecodeError:
+            events = None            # несколько JSON-строк подряд -> JSONL
+        if events is not None:
+            return _read_events(events)
+    recs, total, skipped = [], 0, 0
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        total += 1
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            skipped += 1
+            continue
+        r = parse_line(obj, total)
+        if r is None:
+            skipped += 1
+        else:
+            recs.append(r)
     return recs, total, skipped
 
 
@@ -177,6 +281,21 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None):
     for u in by_id.values():
         for k, v in u.items():
             tot[k] += v
+    # list_events: если есть событие result - итоги берём из него (usage в assistant промежуточный)
+    rres = [r["result"] for r in recs if r["kind"] == "result"]
+    if rres:
+        tot = defaultdict(int)
+        for x in rres:
+            for k, v in x["tokens"].items():
+                tot[k] += v
+        known = lambda key: [x[key] for x in rres if x[key] is not None]
+        res["итог_сессии"] = {
+            "результатов": len(rres), "модели": sorted({m for x in rres for m in x["models"]}),
+            "стоимость_usd": round(sum(known("cost")), 6) if known("cost") else None,
+            "длительность_мс": int(sum(known("duration_ms"))) if known("duration_ms") else None,
+            "ходов": int(sum(known("num_turns"))) if known("num_turns") else None}
+    else:
+        res["итог_сессии"] = None
     res["токены"] = {"вывод": tot["output_tokens"], "вход_без_кэша": tot["input_tokens"],
                      "вход_кэш_чтение": tot["cache_read_input_tokens"],
                      "вход_кэш_запись": tot["cache_creation_input_tokens"]}
@@ -277,10 +396,22 @@ def render_text(results) -> str:
     L = []
     for r in results:
         tk = r["токены"]
-        L.append(f"== {r['роль']}: {r['записей']} записей из {r['строк']} строк (пропущено неизвестных: {r['пропущено']}) ==")
+        L.append(f"== {r['роль']}: {r['записей']} записей из {r['строк']} строк/событий (пропущено неизвестных: {r['пропущено']}) ==")
         L.append(f"ходы пользователя (люди/другие агенты): {r['ходы_пользователя']}; ответов модели: {r['ответы_модели']}")
         L.append(f"токены: вывод {tk['вывод']}; вход без кэша {tk['вход_без_кэша']}; "
                  f"вход через кэш: чтение {tk['вход_кэш_чтение']}, запись {tk['вход_кэш_запись']}")
+        it = r.get("итог_сессии")
+        if it:
+            bits = []
+            if it["модели"]:
+                bits.append("модель " + ", ".join(it["модели"]))
+            if it["стоимость_usd"] is not None:
+                bits.append(f"стоимость ${it['стоимость_usd']}")
+            if it["длительность_мс"] is not None:
+                bits.append(f"длительность {_dur(it['длительность_мс'] // 1000)}")
+            if it["ходов"] is not None:
+                bits.append(f"ходов модели {it['ходов']}")
+            L.append("итог сессии (из события result, токены выше - оттуда же): " + "; ".join(bits))
         tools = ", ".join(f"{n} {c}" for n, c in r["инструменты"]) or "нет"
         L.append(f"инструменты (всего {r['вызовов_инструментов']}, топ-5): {tools}")
         e = r["ошибки_инструментов"]
