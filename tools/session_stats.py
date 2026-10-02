@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""Сводка по журналам сессий Claude Code (JSONL) для агентов-наблюдателей.
+
+Команды:
+  summary роль=путь [роль=путь ...] [--since ISO] [--until ISO] [--json]
+  show роль#N путь          (или: show роль#N роль=путь)
+
+Только стандартная библиотека. Весь разбор формата журнала - в функции
+parse_line(); для облачных сессий с другим форматом правится только она.
+Номер записи N - порядковый номер непустой строки журнала (с 1).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+
+IDLE_GAP = 300          # секунд; пауза длиннее не входит в «активную работу»
+SHORT_LEN = 60          # реплика короче - кандидат в «пустую»
+SHOW_LIMIT = 2000
+EXAMPLE_LEN = 90
+
+METRIC_RE = re.compile(r"^\s*(?:метрика\s*:|отрезок\s+\d+\s*:)", re.I)
+EMPTY_RE = re.compile(
+    r"^(ок|окей|ok|okay|хорошо|ладно|понял[аи]?|принято|принял[аи]?|ясно|спасибо|благодарю|"
+    r"thanks|thank you|thx|got it|ack|roger|noted|done|готово|отлично|супер|great|good|"
+    r"работаю|в работе|приступаю|продолжаю|working|on it|continuing|"
+    r"как дела|как жизнь|how are you|how's it going|привет|hello|hi|да|yes|угу|"
+    r"жду|ожидаю|waiting|standing by)\b", re.I)
+
+
+# ---------------------------------------------------------------- разбор формата
+def _parse_ts(v):
+    if not isinstance(v, str):
+        return None
+    try:
+        d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _block_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    out = []
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, str):
+                out.append(b)
+            elif isinstance(b, dict) and b.get("type") == "text":
+                out.append(str(b.get("text", "")))
+    return "\n".join(out)
+
+
+def parse_line(obj: dict, n: int):
+    """Единственное место, знающее формат строки журнала.
+
+    Возвращает dict записи или None (строка неизвестного вида).
+    Поля: n, kind(user|assistant), ts, text, human(bool), tools[(id,name,input)],
+    results[(tool_use_id,is_error,text)], msg_id, usage(dict|None), has_thinking.
+    """
+    if not isinstance(obj, dict):
+        return None
+    kind = obj.get("type")
+    if kind not in ("user", "assistant"):
+        return None
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return None
+    content = msg.get("content")
+    rec = {"n": n, "kind": kind, "ts": _parse_ts(obj.get("timestamp")),
+           "text": "", "human": False, "tools": [], "results": [],
+           "msg_id": msg.get("id"), "usage": None, "has_thinking": False}
+    texts = []
+    if isinstance(content, str):
+        texts.append(content)
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, str):
+                texts.append(b)
+                continue
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text":
+                texts.append(str(b.get("text", "")))
+            elif t == "tool_use":
+                rec["tools"].append((b.get("id"), str(b.get("name", "?")),
+                                     b.get("input") if isinstance(b.get("input"), dict) else {}))
+            elif t == "tool_result":
+                rec["results"].append((b.get("tool_use_id"), bool(b.get("is_error")),
+                                       _block_text(b.get("content"))))
+            elif t == "thinking":
+                rec["has_thinking"] = True
+    rec["text"] = "\n".join(x for x in texts if x).strip()
+    if kind == "user":
+        rec["human"] = bool(rec["text"]) and not rec["results"] and not obj.get("isMeta")
+    u = msg.get("usage")
+    if kind == "assistant" and isinstance(u, dict):
+        rec["usage"] = {k: int(u.get(k) or 0) for k in
+                        ("input_tokens", "output_tokens",
+                         "cache_read_input_tokens", "cache_creation_input_tokens")
+                        if isinstance(u.get(k) or 0, (int, float))}
+    return rec
+
+
+def read_journal(path: str):
+    """Читает файл -> (records, total_lines, skipped). Устойчив к мусору."""
+    recs, total, skipped = [], 0, 0
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            total += 1
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+            r = parse_line(obj, total)
+            if r is None:
+                skipped += 1
+            else:
+                recs.append(r)
+    return recs, total, skipped
+
+
+# ---------------------------------------------------------------- анализ
+def _norm_cmd(name: str, inp: dict) -> str:
+    if name == "Bash" and "command" in inp:
+        s = str(inp["command"])
+    else:
+        key = next((k for k in ("command", "file_path", "path", "pattern", "url", "query", "skill")
+                    if k in inp), None)
+        s = f"{name} {inp[key]}" if key else f"{name} {json.dumps(inp, sort_keys=True, ensure_ascii=False)}"
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", "<uuid>", s, flags=re.I)
+    return s
+
+
+def _clip(s: str, n: int = EXAMPLE_LEN) -> str:
+    s = re.sub(r"\s+", " ", s).strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _is_empty_msg(text: str) -> bool:
+    t = text.strip()
+    return 0 < len(t) < SHORT_LEN and bool(EMPTY_RE.match(t.lower().lstrip("-*•> ")))
+
+
+def _addr_re(roles):
+    names = "|".join(re.escape(r) for r in sorted(roles, key=len, reverse=True))
+    return re.compile(rf"^\s*(?:(?P<a>{names})\s*:|(?:@|→\s*|->\s*)(?P<b>{names})\b)", re.I | re.M)
+
+
+def analyze(role: str, recs, total, skipped, roles, since=None, until=None):
+    if since or until:
+        recs = [r for r in recs if r["ts"] and (not since or r["ts"] >= since)
+                and (not until or r["ts"] <= until)]
+    ref = lambda n: f"{role}#{n}"
+    res = {"роль": role, "строк": total, "пропущено": skipped, "записей": len(recs)}
+
+    # токены: один раз на message.id (максимум по полям среди строк сообщения)
+    by_id = {}
+    for r in recs:
+        if r["kind"] == "assistant" and r["usage"] is not None:
+            key = r["msg_id"] or f"_line{r['n']}"
+            cur = by_id.setdefault(key, defaultdict(int))
+            for k, v in r["usage"].items():
+                cur[k] = max(cur[k], v)
+    tot = defaultdict(int)
+    for u in by_id.values():
+        for k, v in u.items():
+            tot[k] += v
+    res["токены"] = {"вывод": tot["output_tokens"], "вход_без_кэша": tot["input_tokens"],
+                     "вход_кэш_чтение": tot["cache_read_input_tokens"],
+                     "вход_кэш_запись": tot["cache_creation_input_tokens"]}
+
+    res["ходы_пользователя"] = sum(1 for r in recs if r["human"])
+    ids = {r["msg_id"] or f"_line{r['n']}" for r in recs if r["kind"] == "assistant"}
+    res["ответы_модели"] = len(ids)
+
+    # инструменты и ошибки
+    names, tool_by_id, calls = Counter(), {}, defaultdict(list)
+    for r in recs:
+        for tid, name, inp in r["tools"]:
+            names[name] += 1
+            tool_by_id[tid] = name
+            calls[_norm_cmd(name, inp)].append(r["n"])
+    res["инструменты"] = names.most_common(5)
+    res["вызовов_инструментов"] = sum(names.values())
+    errs = []
+    for r in recs:
+        for tid, is_err, txt in r["results"]:
+            if is_err:
+                errs.append({"ref": ref(r["n"]), "инструмент": tool_by_id.get(tid, "?"),
+                             "текст": _clip(txt, 70)})
+    res["ошибки_инструментов"] = {"всего": len(errs), "примеры": errs[:3]}
+
+    # время
+    stamped = [r for r in recs if r["ts"]]
+    active, gaps = 0.0, []
+    for a, b in zip(stamped, stamped[1:]):
+        g = (b["ts"] - a["ts"]).total_seconds()
+        if g < 0:
+            continue
+        if g <= IDLE_GAP:
+            active += g
+        gaps.append((g, b["n"]))
+    gaps.sort(reverse=True)
+    res["время"] = {
+        "начало": stamped[0]["ts"].isoformat() if stamped else None,
+        "конец": stamped[-1]["ts"].isoformat() if stamped else None,
+        "активно_сек": int(active),
+        "паузы": [{"сек": int(g), "ref": ref(n)} for g, n in gaps[:3]],
+    }
+
+    # строки метрик + накопленные выходные токены
+    out_by_id = {k: v["output_tokens"] for k, v in by_id.items()}
+    cum, seen, metrics = 0, set(), []
+    for r in recs:
+        if r["kind"] == "assistant":
+            key = r["msg_id"] or f"_line{r['n']}"
+            if key in out_by_id and key not in seen:
+                seen.add(key)
+                cum += out_by_id[key]
+            for line in r["text"].splitlines():
+                if METRIC_RE.match(line):
+                    metrics.append({"ref": ref(r["n"]), "время": r["ts"].isoformat() if r["ts"] else None,
+                                    "токенов_вывода_накоплено": cum, "строка": line.strip()})
+    res["метрики"] = metrics
+
+    # пустые сообщения
+    replies = [r for r in recs if r["text"] and (r["human"] or r["kind"] == "assistant")]
+    empties = [r for r in replies if _is_empty_msg(r["text"])]
+    res["пустые"] = {"всего_реплик": len(replies), "пустых": len(empties),
+                     "доля": round(len(empties) / len(replies), 2) if replies else 0.0,
+                     "примеры": [{"ref": ref(r["n"]), "текст": _clip(r["text"], 50)} for r in empties[:3]]}
+
+    # повторы
+    reps = [(c, ns) for c, ns in calls.items() if len(ns) >= 3]
+    reps.sort(key=lambda x: -len(x[1]))
+    res["повторы"] = [{"раз": len(ns), "команда": _clip(c, 100), "refs": [ref(n) for n in ns[:3]]}
+                      for c, ns in reps[:5]]
+
+    # адресаты: ответ модели роли R со строкой «X:» = R->X; реплика с «X:» в журнале R = X->R
+    addr = Counter()
+    if len(roles) > 1:
+        rx = _addr_re(roles)
+        low = {x.lower(): x for x in roles}
+        for r in replies:
+            for m in rx.finditer(r["text"]):
+                other = low.get((m.group("a") or m.group("b")).lower())
+                if not other or other == role:
+                    continue
+                if r["kind"] == "assistant":
+                    addr[(role, other)] += 1
+                else:
+                    addr[(other, role)] += 1
+    res["адресаты"] = [{"от": a, "кому": b, "раз": c} for (a, b), c in addr.items()]
+    return res
+
+
+# ---------------------------------------------------------------- вывод
+def _dur(sec: int) -> str:
+    h, rem = divmod(int(sec), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}ч {m:02d}м" if h else (f"{m}м {s:02d}с" if m else f"{s}с")
+
+
+def render_text(results) -> str:
+    L = []
+    for r in results:
+        tk = r["токены"]
+        L.append(f"== {r['роль']}: {r['записей']} записей из {r['строк']} строк (пропущено неизвестных: {r['пропущено']}) ==")
+        L.append(f"ходы пользователя (люди/другие агенты): {r['ходы_пользователя']}; ответов модели: {r['ответы_модели']}")
+        L.append(f"токены: вывод {tk['вывод']}; вход без кэша {tk['вход_без_кэша']}; "
+                 f"вход через кэш: чтение {tk['вход_кэш_чтение']}, запись {tk['вход_кэш_запись']}")
+        tools = ", ".join(f"{n} {c}" for n, c in r["инструменты"]) or "нет"
+        L.append(f"инструменты (всего {r['вызовов_инструментов']}, топ-5): {tools}")
+        e = r["ошибки_инструментов"]
+        ex = "; ".join(f"{x['ref']} {x['инструмент']}" for x in e["примеры"])
+        L.append(f"ошибки инструментов: {e['всего']}" + (f" (напр. {ex})" if ex else ""))
+        tm = r["время"]
+        pz = ", ".join(f"{_dur(p['сек'])} перед {p['ref']}" for p in tm["паузы"]) or "нет"
+        L.append(f"активная работа: {_dur(tm['активно_сек'])} (паузы >{IDLE_GAP // 60} мин не считаются); "
+                 f"длиннейшие паузы: {pz}")
+        p = r["пустые"]
+        pex = ", ".join(f"{x['ref']} «{x['текст']}»" for x in p["примеры"])
+        L.append(f"пустые реплики: {p['пустых']} из {p['всего_реплик']} ({int(p['доля'] * 100)}%)"
+                 + (f"; напр. {pex}" if pex else ""))
+        if r["повторы"]:
+            L.append("повторы команд (3+ раз, кандидаты в скрипт):")
+            for x in r["повторы"]:
+                L.append(f"  {x['раз']}x {x['команда']} ({', '.join(x['refs'])}...)")
+        else:
+            L.append("повторы команд (3+ раз): нет")
+        m = r["метрики"]
+        if m:
+            L.append(f"строки метрик: {len(m)} (ряд: ссылка, накопленный вывод токенов, строка)")
+            show = m if len(m) <= 8 else m[:4] + m[-4:]
+            for i, x in enumerate(show):
+                if len(m) > 8 and i == 4:
+                    L.append(f"  ... (ещё {len(m) - 8})")
+                L.append(f"  {x['ref']} [{x['токенов_вывода_накоплено']} ток.] {_clip(x['строка'], 110)}")
+        else:
+            L.append("строки метрик: нет")
+        L.append("")
+    addr = [a for r in results for a in r["адресаты"]]
+    if addr:
+        agg = Counter()
+        for a in addr:
+            agg[(a["от"], a["кому"])] += a["раз"]
+        L.append("кто кому писал (по строкам вида «роль:», «@роль», «→ роль»):")
+        for (a, b), c in agg.most_common(12):
+            L.append(f"  {a} -> {b}: {c}")
+    return "\n".join(L).rstrip() + "\n"
+
+
+def show_record(role: str, n: int, path: str) -> str:
+    recs, total, _ = read_journal(path)
+    for r in recs:
+        if r["n"] == n:
+            txt = r["text"]
+            if len(txt) > SHOW_LIMIT:
+                txt = txt[:SHOW_LIMIT] + f"… [обрезано, всего {len(r['text'])} симв.]"
+            author = ("человек/агент" if r["human"] else
+                      "результат инструмента" if r["kind"] == "user" else "модель")
+            tools = ", ".join(name for _, name, _ in r["tools"]) or "нет"
+            extra = ""
+            if r["results"]:
+                bad = sum(1 for x in r["results"] if x[1])
+                extra = f"\nрезультатов инструментов: {len(r['results'])} (ошибок: {bad})"
+                if not txt:
+                    txt = "\n".join(_clip(x[2], 400) for x in r["results"][:3])
+            return (f"{role}#{n} | время: {r['ts'].isoformat() if r['ts'] else 'нет'} | автор: {author}\n"
+                    f"инструменты: {tools}{extra}\n---\n{txt or '(текста нет)'}\n")
+    return f"{role}#{n}: записи нет (в журнале {total} непустых строк; не все строки - сообщения)\n"
+
+
+def _split_role_path(arg: str):
+    if "=" in arg:
+        role, path = arg.split("=", 1)
+        if role and not re.search(r"[\\/:]", role):
+            return role, path
+    return None, arg
+
+
+def _iso(v):
+    d = _parse_ts(v)
+    if v and d is None:
+        raise SystemExit(f"неверная дата ISO: {v}")
+    return d
+
+
+def main(argv=None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("summary")
+    s.add_argument("items", nargs="+", help="роль=путь")
+    s.add_argument("--since")
+    s.add_argument("--until")
+    s.add_argument("--json", action="store_true")
+    sh = sub.add_parser("show")
+    sh.add_argument("ref", help="роль#N")
+    sh.add_argument("target", help="путь или роль=путь")
+    a = ap.parse_args(argv)
+
+    if a.cmd == "summary":
+        pairs = []
+        for it in a.items:
+            role, path = _split_role_path(it)
+            if not role:
+                raise SystemExit(f"ожидалось роль=путь, получено: {it}")
+            pairs.append((role, path))
+        roles = [r for r, _ in pairs]
+        since, until = _iso(a.since), _iso(a.until)
+        results = []
+        for role, path in pairs:
+            recs, total, skipped = read_journal(path)
+            results.append(analyze(role, recs, total, skipped, roles, since, until))
+        if a.json:
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+        else:
+            print(render_text(results), end="")
+        return 0
+
+    m = re.fullmatch(r"(.*)#(\d+)", a.ref)
+    if not m:
+        raise SystemExit("ожидалось роль#N, например producer#42")
+    role, n = m.group(1), int(m.group(2))
+    r2, path = _split_role_path(a.target)
+    print(show_record(role or r2 or "?", n, path), end="")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
