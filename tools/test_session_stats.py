@@ -245,3 +245,16 @@ def test_real_sample_summary(capsys):
     assert S.main(["summary", f"исполнитель={sample}"]) == 0
     out = capsys.readouterr().out
     assert "итог сессии" in out and "ошибки инструментов: 3" in out
+
+
+def test_edited_files_line(tmp_path):
+    def edit(i, name, path):
+        return {"type": "tool_use", "id": i, "name": name, "input": {"file_path": path}}
+    rows = [U("2026-01-01T00:00:00Z", "старт"),
+            A("2026-01-01T00:00:05Z", [edit("1", "Write", "/x/a.md"), edit("2", "Edit", "/x/a.md"),
+                                       edit("3", "Edit", "/x/b.md"), tu("4", "ls")], "m1")]
+    p = write(tmp_path, "r.jsonl", rows)
+    recs, total, skipped = S.read_journal(str(p))
+    res = S.analyze("r", recs, total, skipped, ["r"])
+    assert res["изменённые_файлы"] == [("/x/a.md", 2), ("/x/b.md", 1)]
+    assert "изменённые файлы: /x/a.md (2), /x/b.md (1)" in S.render_text([res])

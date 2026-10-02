@@ -312,6 +312,14 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None):
             tool_by_id[tid] = name
             calls[_norm_cmd(name, inp)].append(r["n"])
     res["инструменты"] = names.most_common(5)
+    edited = Counter()
+    for r in recs:
+        for _tid, name, inp in r["tools"]:
+            if name in ("Write", "Edit", "NotebookEdit"):
+                path = inp.get("file_path") or inp.get("notebook_path") or inp.get("path")
+                if isinstance(path, str) and path:
+                    edited[path] += 1
+    res["изменённые_файлы"] = edited.most_common(8)
     res["вызовов_инструментов"] = sum(names.values())
     errs = []
     for r in recs:
@@ -414,6 +422,8 @@ def render_text(results) -> str:
             L.append("итог сессии (из события result, токены выше - оттуда же): " + "; ".join(bits))
         tools = ", ".join(f"{n} {c}" for n, c in r["инструменты"]) or "нет"
         L.append(f"инструменты (всего {r['вызовов_инструментов']}, топ-5): {tools}")
+        ed = ", ".join(f"{p} ({c})" for p, c in r.get("изменённые_файлы", [])) or "нет"
+        L.append(f"изменённые файлы: {ed}")
         e = r["ошибки_инструментов"]
         ex = "; ".join(f"{x['ref']} {x['инструмент']}" for x in e["примеры"])
         L.append(f"ошибки инструментов: {e['всего']}" + (f" (напр. {ex})" if ex else ""))
