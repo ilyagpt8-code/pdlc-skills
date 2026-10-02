@@ -3,6 +3,7 @@
 
 Команды:
   summary роль=путь [роль=путь ...] [--since ISO] [--until ISO] [--json]
+                  [--prices вход,вывод,чтение_кэша,запись_кэша]
   show роль#N путь          (или: show роль#N роль=путь)
 
 Только стандартная библиотека. Два формата, определяются по содержимому файла:
@@ -22,6 +23,9 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+# цены за 1 млн токенов по умолчанию: Haiku 4.5 (вход, вывод, чтение кэша, запись кэша)
+DEFAULT_PRICES = (1.0, 5.0, 0.10, 1.25)
+DEFAULT_PRICES_NAME = "Haiku 4.5"
 IDLE_GAP = 300          # секунд; пауза длиннее не входит в «активную работу»
 SHORT_LEN = 60          # реплика короче - кандидат в «пустую»
 SHOW_LIMIT = 2000
@@ -70,6 +74,11 @@ def parse_line(obj: dict, n: int):
     if not isinstance(obj, dict):
         return None
     kind = obj.get("type")
+    if kind == "result" and isinstance(obj.get("total_cost_usd"), (int, float)):
+        # итог из журнала: только стоимость, токены берутся из assistant-строк
+        return {"n": n, "kind": "logcost", "ts": _parse_ts(obj.get("timestamp")), "text": "",
+                "human": False, "tools": [], "results": [], "msg_id": None, "usage": None,
+                "has_thinking": False, "cost": float(obj["total_cost_usd"])}
     if kind not in ("user", "assistant"):
         return None
     msg = obj.get("message")
@@ -262,7 +271,7 @@ def _addr_re(roles):
     return re.compile(rf"^\s*(?:(?P<a>{names})\s*:|(?:@|→\s*|->\s*)(?P<b>{names})\b)", re.I | re.M)
 
 
-def analyze(role: str, recs, total, skipped, roles, since=None, until=None):
+def analyze(role: str, recs, total, skipped, roles, since=None, until=None, prices=None):
     if since or until:
         recs = [r for r in recs if r["ts"] and (not since or r["ts"] >= since)
                 and (not until or r["ts"] <= until)]
@@ -299,6 +308,21 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None):
     res["токены"] = {"вывод": tot["output_tokens"], "вход_без_кэша": tot["input_tokens"],
                      "вход_кэш_чтение": tot["cache_read_input_tokens"],
                      "вход_кэш_запись": tot["cache_creation_input_tokens"]}
+
+    # стоимость: итог из журнала, если есть; иначе оценка по ценам за 1 млн токенов
+    pr = tuple(prices) if prices else DEFAULT_PRICES
+    logged = [r["cost"] for r in recs if r["kind"] == "logcost"]
+    it = res["итог_сессии"]
+    if logged:
+        cost, src = sum(logged), "из журнала"
+    elif it and it["стоимость_usd"] is not None:
+        cost, src = it["стоимость_usd"], "из журнала"
+    else:
+        cost = (tot["input_tokens"] * pr[0] + tot["output_tokens"] * pr[1]
+                + tot["cache_read_input_tokens"] * pr[2]
+                + tot["cache_creation_input_tokens"] * pr[3]) / 1e6
+        src = "оценка"
+    res["стоимость"] = {"usd": round(cost, 6), "источник": src}
 
     res["ходы_пользователя"] = sum(1 for r in recs if r["human"])
     ids = {r["msg_id"] or f"_line{r['n']}" for r in recs if r["kind"] == "assistant"}
@@ -400,7 +424,7 @@ def _dur(sec: int) -> str:
     return f"{h}ч {m:02d}м" if h else (f"{m}м {s:02d}с" if m else f"{s}с")
 
 
-def render_text(results) -> str:
+def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
     L = []
     for r in results:
         tk = r["токены"]
@@ -420,6 +444,9 @@ def render_text(results) -> str:
             if it["ходов"] is not None:
                 bits.append(f"ходов модели {it['ходов']}")
             L.append("итог сессии (из события result, токены выше - оттуда же): " + "; ".join(bits))
+        c = r["стоимость"]
+        L.append(f"стоимость: ${c['usd']:.2f} (" + ("из журнала" if c["источник"] == "из журнала"
+                 else f"оценка по ценам {prices_name}") + ")")
         tools = ", ".join(f"{n} {c}" for n, c in r["инструменты"]) or "нет"
         L.append(f"инструменты (всего {r['вызовов_инструментов']}, топ-5): {tools}")
         ed = ", ".join(f"{p} ({c})" for p, c in r.get("изменённые_файлы", [])) or "нет"
@@ -453,7 +480,9 @@ def render_text(results) -> str:
             L.append("строки метрик: нет")
         L.append("")
     addr = [a for r in results for a in r["адресаты"]]
+    L.append(f"ИТОГО стоимость ансамбля: ${sum(r['стоимость']['usd'] for r in results):.2f}")
     if addr:
+        L.append("")
         agg = Counter()
         for a in addr:
             agg[(a["от"], a["кому"])] += a["раз"]
@@ -509,6 +538,8 @@ def main(argv=None) -> int:
     s.add_argument("--since")
     s.add_argument("--until")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--prices", help="цены за 1 млн токенов: вход,вывод,чтение_кэша,запись_кэша "
+                   "(по умолчанию 1,5,0.10,1.25 - Haiku 4.5)")
     sh = sub.add_parser("show")
     sh.add_argument("ref", help="роль#N")
     sh.add_argument("target", help="путь или роль=путь")
@@ -523,14 +554,24 @@ def main(argv=None) -> int:
             pairs.append((role, path))
         roles = [r for r, _ in pairs]
         since, until = _iso(a.since), _iso(a.until)
+        prices, pname = None, DEFAULT_PRICES_NAME
+        if a.prices:
+            try:
+                prices = tuple(float(x) for x in a.prices.split(","))
+            except ValueError:
+                prices = ()
+            if len(prices) != 4:
+                raise SystemExit("--prices: ожидалось 4 числа: вход,вывод,чтение_кэша,запись_кэша")
+            pname = "заданным через --prices (" + a.prices + ")"
         results = []
         for role, path in pairs:
             recs, total, skipped = read_journal(path)
-            results.append(analyze(role, recs, total, skipped, roles, since, until))
+            results.append(analyze(role, recs, total, skipped, roles, since, until, prices))
         if a.json:
-            print(json.dumps(results, ensure_ascii=False, indent=2))
+            tc = round(sum(r["стоимость"]["usd"] for r in results), 6)
+            print(json.dumps({"роли": results, "total_cost_usd": tc}, ensure_ascii=False, indent=2))
         else:
-            print(render_text(results), end="")
+            print(render_text(results, pname), end="")
         return 0
 
     m = re.fullmatch(r"(.*)#(\d+)", a.ref)

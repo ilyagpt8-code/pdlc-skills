@@ -144,7 +144,8 @@ def test_summary_text_and_json(tmp_path, capsys):
     assert "ошибки инструментов: 1" in out and len(out.splitlines()) < 30
     assert S.main(["summary", f"продюсер={p}", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data[0]["токены"]["вывод"] == 70
+    assert data["роли"][0]["токены"]["вывод"] == 70
+    assert data["total_cost_usd"] == data["роли"][0]["стоимость"]["usd"]
 
 
 # ---------------------------------------------------------------- формат list_events
@@ -237,7 +238,7 @@ def test_list_events_pages_and_show(tmp_path, capsys):
     assert S.main(["show", "исп#2", p]) == 0
     assert "Стартовое задание" in capsys.readouterr().out
     assert S.main(["summary", f"исп={p}", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)[0]["итог_сессии"]["ходов"] == 4
+    assert json.loads(capsys.readouterr().out)["роли"][0]["итог_сессии"]["ходов"] == 4
 
 
 def test_real_sample_summary(capsys):
@@ -258,3 +259,29 @@ def test_edited_files_line(tmp_path):
     res = S.analyze("r", recs, total, skipped, ["r"])
     assert res["изменённые_файлы"] == [("/x/a.md", 2), ("/x/b.md", 1)]
     assert "изменённые файлы: /x/a.md (2), /x/b.md (1)" in S.render_text([res])
+
+
+def test_cost_estimate_line_total_and_prices_flag(tmp_path, capsys):
+    p = make_prod(tmp_path)
+    # токены: вывод 70, вход 50, чтение кэша 500, запись кэша - см. analyze
+    r = S.analyze("p", *S.read_journal(p), ["p"])
+    tk = r["токены"]
+    exp = (tk["вход_без_кэша"] * 1 + tk["вывод"] * 5 + tk["вход_кэш_чтение"] * 0.10
+           + tk["вход_кэш_запись"] * 1.25) / 1e6
+    assert abs(r["стоимость"]["usd"] - exp) < 1e-9 and r["стоимость"]["источник"] == "оценка"
+    assert S.main(["summary", f"продюсер={p}"]) == 0
+    out = capsys.readouterr().out
+    assert "стоимость: $0.00 (оценка по ценам Haiku 4.5)" in out
+    assert "ИТОГО стоимость ансамбля: $0.00" in out
+    assert S.main(["summary", f"продюсер={p}", "--json", "--prices", "1000000,0,0,0"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert abs(data["total_cost_usd"] - 50) < 1e-9
+
+
+def test_cost_from_log_result_line(tmp_path):
+    rows = [json.loads(x) for x in open(make_prod(tmp_path), encoding="utf-8") if x.strip().startswith("{")]
+    rows.append({"type": "result", "total_cost_usd": 1.5})
+    p = write(tmp_path, "withcost.jsonl", rows, junk=False)
+    r = S.analyze("p", *S.read_journal(p), ["p"])
+    assert r["стоимость"] == {"usd": 1.5, "источник": "из журнала"}
+    assert "стоимость: $1.50 (из журнала)" in S.render_text([r])
