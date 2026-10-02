@@ -48,21 +48,23 @@ tempconv 25 C C       # Output: 25.00
 
 - **Valid values**: Must be exactly one of: `C`, `F`, `K`
 - **Case sensitivity**: Only uppercase letters are recognized (lowercase `c`, `f`, `k` are invalid)
+- **Whitespace**: Leading and trailing whitespace around the scale codes is ignored (e.g., ` C ` is treated as `C`)
 - **Invalid cases**:
   - Unknown scale code (e.g., `R`, `X`) → Error
   - Missing or empty scale → Error
+  - Scale code with embedded whitespace (e.g., `C C`) → Error
 
 ### Absolute Zero Validation
 
 The utility must reject temperatures below the absolute zero for the source scale:
 
-| Scale | Absolute Zero | Minimum Valid |
-|-------|---------------|---------------|
-| Celsius | −273.15°C | ≥ −273.15 |
-| Fahrenheit | −459.67°F | ≥ −459.67 |
-| Kelvin | 0 K | ≥ 0 |
+| Scale | Absolute Zero | Validation |
+|-------|---------------|------------|
+| Celsius | −273.15°C | Input must satisfy: VALUE ≥ −273.15 |
+| Fahrenheit | −459.67°F | Input must satisfy: VALUE ≥ −459.67 |
+| Kelvin | 0 K | Input must satisfy: VALUE ≥ 0 |
 
-**Validation rule**: If the input VALUE is below the absolute zero for the FROM scale, the utility must reject it with an error.
+**Validation rule**: If the input VALUE is strictly less than the absolute zero threshold for the FROM scale, the utility must reject it with error code 3. Values exactly at the threshold (e.g., −273.15 for Celsius) are valid. Values above the threshold (even by a tiny amount like −273.149°C) are valid. The boundaries are strict numeric comparisons, not tolerances.
 
 ## Output Format
 
@@ -83,8 +85,15 @@ The utility must reject temperatures below the absolute zero for the source scal
 
 The utility must handle errors with appropriate exit codes and messages to stderr.
 
-| Situation | Exit Code | stderr Message |
-|-----------|-----------|----------------|
+### Error Messages Format
+
+Error messages must be printed to stderr exactly as specified in the table below. The format is fixed:
+- Messages starting with "Error:" must use uppercase `E` and followed by a colon and space
+- The message text must match exactly (case-sensitive)
+- Each error message is terminated with a newline character
+
+| Situation | Exit Code | stderr Message (exact) |
+|-----------|-----------|------------------------|
 | Incorrect number of arguments | 1 | `Usage: tempconv <value> <from> <to>` |
 | Invalid number (not a valid numeric format) | 1 | `Error: invalid number` |
 | Invalid scale code (not C, F, or K) | 2 | `Error: invalid scale` |
@@ -125,8 +134,12 @@ The utility must use the following standard conversion formulas:
 ### Precision and Rounding
 
 - All calculations must use standard floating-point arithmetic
-- Output must be rounded or truncated to exactly 2 decimal places
-- Implementation team decides specific rounding behavior (e.g., round-half-up, round-half-to-even)
+- Output must be rounded (not truncated) to exactly 2 decimal places
+- **Rounding method**: Use standard round-half-up (round half away from zero). Examples:
+  - 32.124 → 32.12 (rounds down)
+  - 32.125 → 32.13 (rounds up, halfway case)
+  - 32.126 → 32.13 (rounds up)
+  - −32.125 → −32.13 (rounds away from zero for negative numbers)
 
 ### Numeric Precision Limits
 
@@ -135,9 +148,10 @@ The utility must use the following standard conversion formulas:
 
 ### Boundary Cases Near Absolute Zero
 
-- Values very close to but above absolute zero (e.g., −273.149°C) are valid and should convert successfully
-- Implementation team decides exact tolerance if strict absolute zero boundaries are desired
-- The specification requires rejection only for clearly invalid values (demonstrably below absolute zero)
+- Values exactly at the absolute zero boundary are valid (e.g., −273.15°C, −459.67°F, 0 K)
+- Values above the absolute zero boundary are valid, even by tiny amounts (e.g., −273.149°C, −273.14999°C)
+- Values below the absolute zero boundary must be rejected with error code 3
+- Example: `tempconv -273.151 C F` should reject with error code 3, but `tempconv -273.149 C F` should succeed
 
 ## Usage Context
 
@@ -152,9 +166,7 @@ The following decisions are left to the implementation team:
 
 - **Programming language**: Any language that can build a standalone CLI tool
 - **Argument parsing**: Implementation approach (manual parsing, getopt, command-line library, etc.)
-- **Error message formatting**: Exact capitalization, punctuation, and phrasing (e.g., uppercase/lowercase E in "Error")
-- **Floating-point precision strategy**: How to handle rounding, truncation, and precision beyond 2 decimal places
-- **Range checking tolerance**: Exact validation policy for boundary cases near absolute zero
+- **Floating-point precision**: How to achieve round-half-up behavior in the chosen language (standard library functions, custom rounding logic, etc.)
 - **Additional features**: Whether to support options like `--help`, `--version`, or alternative input formats (not required by this spec)
 
 ## Testing Expectations
