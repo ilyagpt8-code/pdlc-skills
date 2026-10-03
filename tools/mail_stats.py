@@ -276,7 +276,7 @@ def _age(sec):
     return f"{h // 24}д {h % 24}ч {mi:02d}м" if h >= 24 else (f"{h}ч {mi:02d}м" if h else f"{mi}м")
 
 
-def render(a, total) -> str:
+def render(a, total, max_age_h=None) -> str:
     roles, st = a["roles"], a["st"]
     L = [f"Писем всего: {total}. Роли: {', '.join(roles) or 'нет'}."]
     L.append("")
@@ -289,14 +289,28 @@ def render(a, total) -> str:
             line += f"; самое старое: {s['open'][0]['name']}"
         L.append(line)
     L.append("")
-    if a["waits"]:
+    items = a["wait_items"]
+    hidden = 0
+    if max_age_h is not None:
+        fresh = [it for it in items if it["age"] is None or it["age"] <= max_age_h * 3600]
+        hidden, items = len(items) - len(fresh), fresh
+    if items:
+        # Очередь у узла: кого ждут больше всего (живые ансамбли собираются вокруг одной роли).
+        from collections import Counter
+        q = Counter(it["to"] for it in items)
+        top, n = q.most_common(1)[0]
+        if n >= 2:
+            oldest = max((it["age"] or 0) for it in items if it["to"] == top)
+            L.append(f"Очередь у узла: {top} — ждут {n} писем, самое старое {_age(oldest)}.")
         L.append("Ждут (письмо с вопросом, просьбой или готовым результатом без ответа; "
                  "старые сверху; возраст - до последнего письма в почте):")
-        for it in a["wait_items"]:
+        for it in items:
             age = f"возраст {_age(it['age'])}; " if it["age"] is not None else ""
             L.append(f"  {it['frm']} ждёт {it['to']}: {it['name']} ({age}признаки: {', '.join(it['signals'])})")
     else:
         L.append("Ждут: никто.")
+    if hidden:
+        L.append(f"  (ещё {hidden} ожиданий старше {max_age_h} ч скрыто — давние, вероятно, закрыты делом)")
     if a["repeats"]:
         L.append("Повтор вопроса (то же письмо отправлено снова; «без ответа» - адресат между ними не писал):")
         for x in a["repeats"]:
@@ -340,13 +354,15 @@ def main(argv=None) -> int:
     ap.add_argument("folder", help="папка ансамбля (в ней mail/)")
     ap.add_argument("--last", type=int, default=5, help="K: окно «последние сообщения»")
     ap.add_argument("--roles", default="", help="все роли через запятую (чтобы найти ни разу не писавших)")
+    ap.add_argument("--max-age-hours", type=float, default=None,
+                    help="показывать в «Ждут» только письма моложе N часов (живые долгие ансамбли)")
     a = ap.parse_args(argv)
     msgs = load(Path(a.folder))
     if not msgs:
         print("Писем нет: папка mail пуста или не найдена.")
         return 0
     extra = [x.strip() for x in a.roles.split(",") if x.strip()]
-    print(render(analyze(msgs, extra, a.last), len(msgs)), end="")
+    print(render(analyze(msgs, extra, a.last), len(msgs), max_age_h=a.max_age_hours), end="")
     return 0
 
 
