@@ -28,21 +28,21 @@
   3x Read /home/user/pdlc-skills/runs/005/spec/journal.md (executor#47, executor#131, executor#161...)
 строки метрик: нет
 
-== producer: 103 записей из 146 строк/событий (пропущено неизвестных: 43) ==
-ходы пользователя (люди/другие агенты): 1; ответов модели: 22
-токены: вывод 530; вход без кэша 182; вход через кэш: чтение 1191011, запись 36995
-стоимость: $0.17 (оценка по ценам Haiku 4.5)
-инструменты (всего 33, топ-5): Read 17, Bash 8, Edit 3, SubagentHandback 3, Write 2
-изменённые файлы: /home/user/pdlc-skills/runs/005/spec/journal.md (3), /home/user/pdlc-skills/runs/005/spec/mail/003-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/spec/mail/007-producer-to-expert.md (1)
-ошибки инструментов: 0
-активная работа: 6м 16с (паузы >5 мин не считаются); длиннейшие паузы: 2м 45с перед producer#97, 1м 22с перед producer#63, 10с перед producer#49
-пустые реплики: 0 из 12 (0%)
+== producer: 142 записей из 199 строк/событий (пропущено неизвестных: 57) ==
+ходы пользователя (люди/другие агенты): 1; ответов модели: 32
+токены: вывод 560; вход без кэша 264; вход через кэш: чтение 1922984, запись 46958
+стоимость: $0.25 (оценка по ценам Haiku 4.5)
+инструменты (всего 45, топ-5): Read 21, Bash 11, Edit 5, Write 4, SubagentHandback 4
+изменённые файлы: /home/user/pdlc-skills/runs/005/spec/journal.md (5), /home/user/pdlc-skills/runs/005/spec/mail/003-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/spec/mail/007-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/spec/mail/010-producer-to-all.md (1), /home/user/pdlc-skills/runs/005/spec/producer-review.md (1)
+ошибки инструментов: 1 (напр. producer#169 Edit)
+активная работа: 9м 01с (паузы >5 мин не считаются); длиннейшие паузы: 2м 45с перед producer#97, 1м 46с перед producer#147, 1м 22с перед producer#63
+пустые реплики: 0 из 16 (0%)
 повторы команд (3+ раз, кандидаты в скрипт):
-  5x python tools/progress.py runs/005/spec/journal.md --stats runs/005/spec/stats.md --budget-usd 1 (producer#41, producer#79, producer#89...)
-  3x Read /home/user/pdlc-skills/runs/005/spec/control.md (producer#26, producer#66, producer#100...)
-  3x find /home/user/pdlc-skills/runs/005/spec/mail -type f -name "*.md" | sort (producer#28, producer#68, producer#102...)
-  3x Read /home/user/pdlc-skills/runs/005/spec/journal.md (producer#29, producer#69, producer#103...)
-  3x Read /home/user/pdlc-skills/spec/tempconv.md (producer#46, producer#116, producer#123...)
+  7x python tools/progress.py runs/005/spec/journal.md --stats runs/005/spec/stats.md --budget-usd 1 (producer#41, producer#79, producer#89...)
+  5x Edit /home/user/pdlc-skills/runs/005/spec/journal.md (producer#51, producer#84, producer#128...)
+  4x Read /home/user/pdlc-skills/runs/005/spec/control.md (producer#26, producer#66, producer#100...)
+  4x find /home/user/pdlc-skills/runs/005/spec/mail -type f -name "*.md" | sort (producer#28, producer#68, producer#102...)
+  4x Read /home/user/pdlc-skills/runs/005/spec/journal.md (producer#29, producer#69, producer#103...)
 строки метрик: нет
 
 == choreographer: 130 записей из 182 строк/событий (пропущено неизвестных: 52) ==
@@ -61,4 +61,4 @@
   3x Read /home/user/pdlc-skills/spec/tempconv.md (choreographer#61, choreographer#172, choreographer#176...)
 строки метрик: нет
 
-ИТОГО стоимость ансамбля: $0.71
+ИТОГО стоимость ансамбля: $0.80
