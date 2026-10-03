@@ -10,7 +10,17 @@ BID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
 
 
 def U(ts, text):
-    return {"type": "user", "timestamp": ts, "message": {"role": "user", "content": text}}
+    """Служебная запись user (isMeta): не реплика владельца."""
+    return {"type": "user", "timestamp": ts, "isMeta": True, "message": {"role": "user", "content": text}}
+
+
+def H(ts, text, origin="human", **extra):
+    """Запись user нового формата: origin.kind (human - живая реплика)."""
+    r = {"type": "user", "timestamp": ts, "message": {"role": "user", "content": text}}
+    if origin:
+        r["origin"] = {"kind": origin}
+    r.update(extra)
+    return r
 
 
 def A(ts, blocks, mid="m"):
@@ -325,3 +335,55 @@ def test_duplicate_incoming_record_same_time_is_one_letter(tmp_path):
     out = tmp_path / "o"
     C.main([str(out), f"anna={a}", f"boris={b}"])
     assert names(out) == ["001-anna-to-boris.md"]
+
+
+def _owner(tmp, rows):
+    p = write(tmp, f"{AID}.jsonl", rows)
+    C.build(tmp / "out", [("arch", p)])
+    return sorted((tmp / "out" / "mail").glob("*.md"))
+
+
+def test_owner_replies_are_mail(tmp_path):
+    files = _owner(tmp_path, [
+        H("2026-01-01T10:00:00Z", "Держать положение, уровнем"),
+        H("2026-01-01T10:01:00Z", "<system-reminder>x</system-reminder> Да, делай"),
+        H("2026-01-01T10:02:00Z", "<system-reminder>The user started</system-reminder>"),
+        H("2026-01-01T10:03:00Z", "[Request interrupted by user]", origin=None),
+        H("2026-01-01T10:04:00Z", "<task-notification><task-id>x</task-id></task-notification>", "task-notification"),
+        H("2026-01-01T10:05:00Z", "Another Claude session sent a message: <cross-session-message from=\"z\">hi</cross-session-message>", "peer", isMeta=True),
+        H("2026-01-01T10:06:00Z", "This session is being continued from a previous", origin=None, isCompactSummary=True),
+        H("2026-01-01T10:07:00Z", "# Autonomous loop check", origin=None, isMeta=True),
+        H("2026-01-01T10:08:00Z", "<local-command-stdout>ok</local-command-stdout>", origin=None),
+        H("2026-01-01T10:09:00Z", "ответ после перерыва", "human"),
+        {"type": "user", "timestamp": "2026-01-01T10:10:00Z", "origin": {"kind": "human"},
+         "message": {"role": "user", "content": [tr("t1", "результат")]}},
+    ])
+    names = [f.name for f in files]
+    assert len(files) == 3 and all(n.endswith("-owner-to-arch.md") for n in names), names
+    texts = [f.read_text(encoding="utf-8") for f in files]
+    assert "Держать" in texts[0] and "Да, делай" in texts[1] and "<system-reminder>" not in texts[1]
+    assert "ответ после" in texts[2]
+
+
+def test_owner_strict_when_origin_present_and_fallback_without(tmp_path):
+    # в журнале есть origin: запись без него (прерывание, служебное) - не владелец
+    assert len(_owner(tmp_path, [H("2026-01-01T10:00:00Z", "один", "human"),
+                                 H("2026-01-01T10:01:00Z", "два", origin=None)])) == 1
+    # старый журнал без origin вообще: обычная реплика - владелец, isMeta/служебный текст - нет
+    t2 = tmp_path / "b"
+    t2.mkdir()
+    assert len(_owner(t2, [H("2026-01-01T10:00:00Z", "обычная", origin=None),
+                           H("2026-01-01T10:01:00Z", "мета", origin=None, isMeta=True),
+                           H("2026-01-01T10:02:00Z", "The app was quit while", origin=None)])) == 1
+
+
+def test_owner_answer_to_ask_user_question(tmp_path):
+    ask = A("2026-01-01T10:00:00Z", [{"type": "tool_use", "id": "q1", "name": "AskUserQuestion",
+                                      "input": {"questions": []}}], "q")
+    ans = {"type": "user", "timestamp": "2026-01-01T12:00:00Z", "message": {"role": "user", "content": [
+        tr("q1", 'Your questions have been answered: "Как?"="Уровнем". You can now continue with these answers in mind.')]}}
+    other = {"type": "user", "timestamp": "2026-01-01T12:01:00Z", "message": {"role": "user", "content": [
+        tr("zz", 'Your questions have been answered: "x"="y"')]}}
+    files = _owner(tmp_path, [ask, ans, other])
+    assert len(files) == 1 and "Уровнем" in files[0].read_text(encoding="utf-8")
+    assert "continue with these" not in files[0].read_text(encoding="utf-8")

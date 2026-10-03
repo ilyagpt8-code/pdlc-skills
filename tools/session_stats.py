@@ -120,6 +120,10 @@ def parse_line(obj: dict, n: int):
            "text": "", "human": False, "tools": [], "results": [],
            "msg_id": msg.get("id"), "usage": None, "has_thinking": False,
            "model": msg.get("model") if isinstance(msg.get("model"), str) else None}
+    if kind == "user":
+        o = obj.get("origin")
+        rec["origin"] = o.get("kind") if isinstance(o, dict) and isinstance(o.get("kind"), str) else None
+        rec["meta"] = bool(obj.get("isMeta") or obj.get("isCompactSummary"))
     texts = []
     if isinstance(content, str):
         texts.append(content)

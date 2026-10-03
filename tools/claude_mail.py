@@ -14,7 +14,10 @@
 from-session / from-name) в тексте пользовательской записи, в queue-operation (enqueue)
 и в attachment (queued_command); один блок из разных записей - одно письмо.
 Исходящее: вызов SendMessage (to, message) или mcp__ccd_session_mgmt__send_message
-(session_id, message). Одно письмо, видимое у отправителя и получателя, склеивается
+(session_id, message). Реплики владельца в чате сессии (запись user с origin.kind=human; без поля origin - не
+isMeta/isCompactSummary, не результат инструмента, не служебный текст), а также ответ на вопрос
+агента (tool_result вызова AskUserQuestion) - письма owner -> роль.
+Одно письмо, видимое у отправителя и получателя, склеивается
 по (отправитель, получатель, текст) в пределах 12 ч (доставка может ждать в очереди).
 Адресат - id/uds-канал/local_<uuid>: роль берётся из таблицы «id -> роль», собранной по полям
 from, from-session, from-name, name всех входящих. Субагент (agentId из записи запуска Agent)
@@ -45,6 +48,17 @@ NOTIF_RE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
 ATTR_RE = re.compile(r'([\w-]+)\s*=\s*"([^"]*)"')
 SEND_TOOLS = {"SendMessage": "to", "mcp__ccd_session_mgmt__send_message": "session_id"}
 OTHER = "other"
+OWNER = "owner"
+# не-человеческие записи type=user: начало текста (после снятия <system-reminder>-блоков)
+NOT_OWNER_RE = re.compile(
+    r"\s*(?:<(?:cross-session-message|agent-message|task-notification|system-reminder|local-command-"
+    r"|command-name|command-message|command-args|scheduled-task)|This session is being continued"
+    r"|\[Request interrupted|\[Cross-session idle|Another Claude session sent|# Autonomous loop"
+    r"|The app was quit|Caveat: The messages below)", re.I)
+ASK_TOOL = "AskUserQuestion"        # ответ владельца на вопрос агента приходит как tool_result этого вызова
+ASKED_RE = re.compile(r"^\s*(?:Your questions have been answered|User has answered)[:\s]", re.I)
+ASK_TAIL_RE = re.compile(r"\s*You can now continue with these answers in mind\.?\s*$", re.I)
+REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 
 
 def _sid(v) -> str:
@@ -200,9 +214,29 @@ def raw_mail_items(path):
     return out
 
 
+def owner_text(r, strict):
+    """Текст реплики владельца в записи user или None. Живая реплика человека: origin.kind == human
+    (strict: в журнале поле origin есть - запись без него не человек); без поля - запасное правило:
+    не isMeta/isCompactSummary (в т.ч. запуск по расписанию /loop, cron), не результат инструмента,
+    не служебный текст."""
+    if r["kind"] != "user" or r.get("src", "user") != "user" or r.get("results") or r.get("meta"):
+        return None
+    o = r.get("origin")
+    if o is not None and o != "human":
+        return None
+    if o is None and strict:
+        return None
+    text = REMINDER_RE.sub("", r["text"] or "").strip()
+    if not text or NOT_OWNER_RE.match(text) or "<cross-session-message" in text             or "<task-notification>" in text or "<local-command-stdout>" in text:
+        return None
+    return text
+
+
 def extract(role, recs, resolve, since=None, until=None):
     """Письма одной сессии: список dict(ts, frm, to, text, side, src)."""
     out = []
+    strict = any(r.get("origin") for r in recs if r["kind"] == "user")
+    ask_ids = {_id for r in recs if r["kind"] == "assistant" for _id, name, _i in r["tools"] if name == ASK_TOOL}
     failed = {tid for r in recs for tid, err, txt in r.get("results", ()) if err or FAILED_RE.search(txt or "")}
     sent_ids = set()            # один вызов отправки может быть записан в журнале дважды (тот же tool_use id)
     seen_in = set()             # одна запись входящего, продублированная в журнале (то же время, канал, текст)
@@ -212,6 +246,13 @@ def extract(role, recs, resolve, since=None, until=None):
             continue
         if r["kind"] == "user":
             src = r.get("src", "user")
+            ot = owner_text(r, strict)
+            for tid, err, txt in r.get("results", ()):
+                if tid in ask_ids and not err and ASKED_RE.match(txt or ""):
+                    ans = ASK_TAIL_RE.sub("", txt).strip()
+                    out.append({"ts": ts, "frm": OWNER, "to": role, "text": ans, "side": "in", "src": "owner"})
+            if ot:
+                out.append({"ts": ts, "frm": OWNER, "to": role, "text": ot, "side": "in", "src": "owner"})
             if "cross-session-message" in r["text"]:
                 for at, body in _blocks(r["text"]):
                     frm = resolve(at.get("from-session"), at.get("from"), at.get("from-name"), at.get("name"))

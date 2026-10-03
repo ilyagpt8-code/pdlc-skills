@@ -197,7 +197,7 @@ def find_repeats(msgs):
     «повтор без ответа». Возвращает [{frm, to, name, orig, gap, replied}]."""
     out = []
     for i, m in enumerate(msgs):
-        if is_sub(m["frm"]) or is_sub(m["to"]):
+        if is_sub(m["frm"]) or is_sub(m["to"]) or m["frm"] == "owner":  # повторы владельца — не разрыв
             continue
         marked = bool(REPEAT_WORD.search(m["text"]))
         best, replied = None, False
@@ -243,20 +243,21 @@ def analyze(msgs, roles_extra=(), last=5, window_h=WINDOW_HOURS):
                     st[r]["via_all"] += 1
         else:
             st[t]["to_me"] += 1
-            if not answered(msgs, i):
+            if f != "owner" and not answered(msgs, i):     # владелец ответа не ждёт
                 st[f]["open"].append(m)
     last_ts = max((m["ts"] for m in msgs if m.get("ts")), default=None)
     ens = set(roles_extra)          # явно названные роли; «other…» без этого - внешняя сессия
     cands = []
     for i, m in enumerate(msgs):
         y = m["to"]
-        if is_sub(m["frm"]) or is_sub(y) or y == "all" or y == m["frm"]:
+        if m["frm"] == "owner" or is_sub(m["frm"]) or is_sub(y) or y == "all" or y == m["frm"]:
             continue                # субагенты отчитываются уведомлением и ответа не ждут
         if y.split("_")[0] == "other" and y not in ens:
             continue                # внешняя сессия - не роль ансамбля
         replied = False
         for x in msgs[i + 1:]:
-            if x["frm"] == y and x["to"] == m["frm"]:
+            if (x["frm"] == y and x["to"] == m["frm"]) or (x["frm"] == "owner" and x["to"] == y and m["frm"] != "owner"):
+                # ответ адресата; либо владелец ответил за него в его чате
                 if m.get("ts") is None or x.get("ts") is None or 0 <= (x["ts"] - m["ts"]).total_seconds() <= window_h * 3600:
                     replied = True
                     break
