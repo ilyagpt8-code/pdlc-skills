@@ -368,6 +368,31 @@ class TestRegressionAndEdgeCases:
         assert stdout == "0"
 
 
+class TestSpecialFloatValues:
+    """Test rejection of special float values (inf, -inf, nan)."""
+
+    def test_infinity_input(self):
+        """Infinity should be rejected as invalid"""
+        stdout, stderr, code = run_tempconv("inf", "F", "C")
+        assert code == 1
+        assert stderr == "Error: invalid temperature value"
+        assert stdout == ""
+
+    def test_negative_infinity_input(self):
+        """Negative infinity should be rejected as invalid"""
+        stdout, stderr, code = run_tempconv("-inf", "K", "C")
+        assert code == 1
+        assert stderr == "Error: invalid temperature value"
+        assert stdout == ""
+
+    def test_nan_input(self):
+        """NaN should be rejected as invalid"""
+        stdout, stderr, code = run_tempconv("nan", "C", "F")
+        assert code == 1
+        assert stderr == "Error: invalid temperature value"
+        assert stdout == ""
+
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest_args = [__file__, "-v"]

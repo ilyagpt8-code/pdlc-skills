@@ -44,8 +44,29 @@ tempconv -inf F C     # Error: invalid temperature value
 tempconv nan C F      # Error: invalid temperature value
 ```
 
+### Implementation (Turn 2)
+
+Fix applied in `out/007-A1/tempconv.py`:
+```python
+import math
+
+# After: value = float(value_str)
+if not math.isfinite(value):
+    print("Error: invalid temperature value", file=sys.stderr)
+    sys.exit(1)
+```
+
+Added tests in `out/007-A1/tests/test_tempconv.py`:
+- `test_infinity_input()` - verifies `inf` is rejected
+- `test_negative_infinity_input()` - verifies `-inf` is rejected
+- `test_nan_input()` - verifies `nan` is rejected
+
+All 54 tests pass (51 original + 3 new special value tests).
+
 ---
 
-**Status**: Identified by expert in Round 2; noted by tester in Round 2 (test case 28)
+**Status**: RESOLVED in Turn 2
+**Implementation**: Used `math.isfinite()` to reject inf/-inf/nan
+**Metrics**: Improved from 34/35 to 35/35 test cases passing
 **Severity**: Minor (edge case, but affects spec compliance)
-**Priority**: Should be fixed before final acceptance
+**Priority**: Fixed before final acceptance
