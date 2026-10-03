@@ -210,16 +210,16 @@ def test_bare_three_digit_number_is_not_a_reference(tmp_path):
 def test_reply_window(tmp_path):
     a = waits_of(tmp_path, [
         ("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
-        ("002-b-to-a.md", L("15:59:00", "Сделал, вот результат.")),
+        ("002-b-to-a.md", L("11:59:00", "Сделал, вот результат.")),
     ])
-    assert ("a", "b") not in a["waits"]                      # ответ в пределах 6 ч
+    assert ("a", "b") not in a["waits"]                      # ответ в пределах окна (по умолчанию 2 ч)
     d = tmp_path / "late"
     d.mkdir()
     msgs = [("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
-            ("002-b-to-a.md", L("16:30:00", "Сделал, вот результат."))]
+            ("002-b-to-a.md", L("12:30:00", "Сделал, вот результат."))]
     assert ("a", "b") in waits_of(d, msgs)["waits"]          # позже окна - письмо кандидат
     assert ("a", "b") in M.analyze(M.load(d), (), 5, window_h=2)["waits"]
-    assert ("a", "b") not in M.analyze(M.load(d), (), 5, window_h=7)["waits"]
+    assert ("a", "b") not in M.analyze(M.load(d), (), 5, window_h=3)["waits"]
 
 
 def test_fresh_candidate_inside_window(tmp_path):
@@ -229,7 +229,7 @@ def test_fresh_candidate_inside_window(tmp_path):
     ])
     it = [i for i in a["wait_items"] if i["name"] == "001-a-to-b.md"][0]
     assert it["fresh"] and it["age"] == 1800
-    assert "окно 6 ч не истекло" in M.render(a, 2)
+    assert "окно 2 ч не истекло" in M.render(a, 2)
 
 
 def test_reply_must_go_to_sender(tmp_path):
