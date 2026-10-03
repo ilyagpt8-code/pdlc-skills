@@ -122,7 +122,7 @@ def test_progress_plateau_big_and_small(tmp_path, capsys):
 
 
 def test_progress_growth(tmp_path, capsys):
-    p = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=15 [источник: a]\n")
+    p = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=12 [источник: a]\n")
     out = run_p(capsys, p)
     assert "РОСТ" in out and "выясни причину" in out
 
@@ -280,3 +280,57 @@ def test_progress_real_003(capsys):
     assert "0 -> 8" not in out and "ЦЕЛЬ ИЗМЕНЕНА" in out
     out = run_p(capsys, base / "app" / "journal.md")
     assert "НОЛЬ С ПЕРВОЙ" in out
+
+
+# ---------------------------------------------------------------- доработки по проверке на истории ансамбля
+def seg(n, name, v, src, was=None, tok=None):
+    w = f" (было {was})" if was is not None else ""
+    t = f", токены за отрезок={tok}" if tok is not None else ""
+    return f"отрезок {n}: метрика {name}={v}{w} [источник: {src}]{t}"
+
+
+def test_progress_verdict_by_current_metric(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([
+        seg(1, "старая", 100, "a"), seg(2, "старая", 100, "b", 100), seg(3, "старая", 100, "c", 100),
+        seg(4, "новая", 80, "d"), seg(5, "новая", 60, "e", 80)]))
+    out = run_p(capsys, j)
+    assert "закрыта (переопределена)" in out
+    assert out.strip().splitlines()[-1].startswith("вывод: идёт")
+    assert out.count("ПЛАТО") == 0
+
+
+def test_progress_was_positive_creates_step_for_first_point(tmp_path, capsys):
+    out = run_p(capsys, journal(tmp_path, seg(1, "q", 90, "a", 100)))
+    assert "шаг 1: 100 -> 90" in out
+    for was in ("0", "N/A", "неизвестно"):
+        out = run_p(capsys, journal(tmp_path, f"отрезок 1: метрика q=8 (было {was}) [источник: a]"))
+        assert "шаг 1" not in out and "0 -> 8" not in out
+
+
+def test_progress_plateau_needs_tokens(tmp_path, capsys):
+    lines = lambda tok: "\n".join([seg(1, "q", 1000, "a", tok=0), seg(2, "q", 1000, "b", 1000, tok),
+                                    seg(3, "q", 1000, "c", 1000, tok)])
+    assert "ПЛАТО" not in run_p(capsys, journal(tmp_path, lines(20000)))
+    assert "ПЛАТО" in run_p(capsys, journal(tmp_path, lines(30000)))
+    assert "ПЛАТО" not in run_p(capsys, journal(tmp_path, lines(30000)), "--min-tokens", 100000)
+    # токены неизвестны - порог выполнен
+    j = journal(tmp_path, "\n".join([seg(1, "q", 1000, "a"), seg(2, "q", 1000, "b"), seg(3, "q", 1000, "c")]))
+    assert "ПЛАТО" in run_p(capsys, j)
+
+
+def test_progress_min_step(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([seg(1, "q", 1000, "a"), seg(2, "q", 960, "b"), seg(3, "q", 925, "c")]))
+    assert "ПЛАТО" not in run_p(capsys, j)  # 4 % и 3.6 % - не медленные при 0.035
+    assert "ПЛАТО" in run_p(capsys, j, "--min-step", 0.05)
+    j2 = journal(tmp_path, "\n".join([seg(1, "q", 10, "a"), seg(2, "q", 10, "b"), seg(3, "q", 10, "c")]))
+    assert "ПЛАТО" in run_p(capsys, j2, "--min-step", 0.0)  # правило «меньше 20» не меняется
+
+
+def test_progress_jump_flag(tmp_path, capsys):
+    j = journal(tmp_path, "\n".join([seg(1, "q", 100, "a"), seg(2, "q", 50, "b"), seg(3, "q", 45, "c")]))
+    out = run_p(capsys, j)
+    assert "СКАЧОК" in out and out.strip().splitlines()[-1].startswith("вывод: идёт")
+    out = run_p(capsys, journal(tmp_path, "\n".join([seg(1, "q", 10, "a"), seg(2, "q", 5, "b")])))
+    assert out.strip().splitlines()[-1] == "вывод: скачок - проверь учёт, прежде чем считать прогрессом."
+    out = run_p(capsys, journal(tmp_path, "\n".join([seg(1, "q", 100, "a"), seg(2, "q", 60, "b")])))
+    assert "СКАЧОК" not in out  # ровно 40 % - не скачок

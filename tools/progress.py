@@ -24,6 +24,9 @@ SRC_RE = re.compile(r"\[[^\]]*источник[^\]]*\]", re.I)
 TOK_RE = re.compile(r"токены\s+за\s+отрезок\s*=\s*(\d+)", re.I)
 TARGET_RE = re.compile(rf"(?:цель|целев[а-яё]*|target)\s*(?:метрик[а-яё]*|значени[а-яё]*|диапазон)?\s*"
                        rf"(?:[:=]\s*)?(?:[^\s\d≤<=:]+\s*)?(?:≤|<=|=|<)?\s*({NUM})", re.I)
+MIN_STEP = 0.035      # доля уменьшения, ниже которой шаг медленный
+MIN_TOKENS = 50000    # плато только если на два последних шага ушло больше токенов
+JUMP = 0.40           # скачок значения - информационный флаг
 SKIP_NAMES = {"всего", "отрезок", "токены"}
 # Haiku 4.5, USD за токен
 P_IN, P_OUT, P_CR, P_CW = 1e-6, 5e-6, 0.10e-6, 1.25e-6
@@ -76,14 +79,17 @@ def series(points):
             continue
         dedup.append(p)
     use = dedup
-    steps, prev = [], None
+    steps, step_tok, prev = [], [], None
     for p in use:
-        # «(было X)» без предыдущей точки точку не создаёт
-        start = p["was"] if (p["was"] is not None and prev is not None) else prev
+        # «(было X)» у первой точки создаёт шаг, только если X - число > 0 (пересчёт прошлой точки
+        # в новом учёте); «(было 0)» и прочее шага не создаёт
+        was_ok = p["was"] is not None and (prev is not None or p["was"] > 0)
+        start = p["was"] if was_ok else prev
         if start is not None:
             steps.append((start, p["value"]))
+            step_tok.append(p["tokens"])
         prev = p["value"]
-    return use, steps
+    return use, steps, step_tok
 
 
 def find_targets(text: str, target):
@@ -99,15 +105,22 @@ def find_targets(text: str, target):
     return found
 
 
-def is_flat(start, end):
+def is_flat(start, end, min_step=MIN_STEP):
     dec = start - end
     if start < 20:
         return dec <= 0
-    return dec < 0.05 * start
+    return dec < min_step * start
 
 
-def analyze_metric(points, target):
-    vals, steps = series(points)
+def is_jump(start, end):
+    """Значение сменилось больше чем на 40 % (вверх или вниз)."""
+    if start == 0:
+        return end != 0
+    return abs(end - start) / abs(start) > JUMP
+
+
+def analyze_metric(points, target, min_step=MIN_STEP, min_tokens=MIN_TOKENS):
+    vals, steps, step_tok = series(points)
     last = vals[-1]["value"]
     flags = []
     if last <= target:
@@ -115,8 +128,13 @@ def analyze_metric(points, target):
     else:
         if steps and steps[-1][1] > steps[-1][0]:
             flags.append("РОСТ")
-        if len(steps) >= 2 and all(is_flat(a, b) for a, b in steps[-2:]):
-            flags.append("ПЛАТО")
+        if len(steps) >= 2 and all(is_flat(a, b, min_step) for a, b in steps[-2:]):
+            tk = step_tok[-2:]
+            # токены неизвестны - порог считается выполненным
+            if any(t is None for t in tk) or sum(tk) > min_tokens:
+                flags.append("ПЛАТО")
+    if any(is_jump(a, b) for a, b in steps):
+        flags.append("СКАЧОК")
     if len(steps) <= 1 and last <= target and vals and (len(vals) <= 2):
         flags.append("НОЛЬ С ПЕРВОЙ")
     if any(p["src"] is None for p in points):
@@ -128,7 +146,7 @@ def analyze_metric(points, target):
     left = None
     if last > target and rate and rate > 0:
         left = math.ceil((last - target) / rate)
-    return {"vals": vals, "steps": steps, "flags": flags, "last": last, "rate": rate, "left": left}
+    return {"vals": vals, "steps": steps, "min_step": min_step, "flags": flags, "last": last, "rate": rate, "left": left}
 
 
 def parse_stats(text: str):
@@ -150,7 +168,9 @@ def parse_stats(text: str):
     return (t if found else None), (cost if cost > 0 else None)
 
 
-def verdict(results, changed=None, target=0.0):
+def verdict(results, changed=None, target=0.0, min_step=MIN_STEP):
+    # вывод - по текущей метрике; закрытые (переопределённые) в него не входят
+    results = {n: r for n, r in results.items() if not r.get("closed")}
     if changed:
         return (f"цель метрики изменена в журнале (было {fmt(target)}, стало {', '.join(fmt(x) for x in changed)}) - "
                 "менять цель может только принимающий по заданию; проверь, есть ли его решение.")
@@ -162,6 +182,9 @@ def verdict(results, changed=None, target=0.0):
                     "и проверить крайние случаи и каждый пример из задания/спецификации отдельной проверкой.")
         return "цель достигнута - проверь приёмку."
     act = [r for r in results.values() if "ЦЕЛЬ" not in r["flags"]]
+    for r in act:
+        if len(r["steps"]) == 1 and is_jump(*r["steps"][0]):
+            return "скачок - проверь учёт, прежде чем считать прогрессом."
     if any("РОСТ" in r["flags"] for r in act):
         return "рост - выясни причину."
     if any("ПЛАТО" in r["flags"] for r in act):
@@ -172,7 +195,7 @@ def verdict(results, changed=None, target=0.0):
             return False
         s, e = st[-1]
         small = s < 20
-        return (e >= s) if small else (s - e) < 0.05 * s
+        return (e >= s) if small else (s - e) < min_step * s
     if any(stalled(r) for r in act):
         return "последний отрезок без заметного движения - ещё один такой отрезок будет плато; спроси команду, что мешает."
     if any("БЕЗ ИСТОЧНИКА" in r["flags"] for r in act):
@@ -188,6 +211,10 @@ def main(argv=None) -> int:
     ap.add_argument("--stats", help="stats.md от session_stats.py")
     ap.add_argument("--budget-usd", type=float)
     ap.add_argument("--target", type=float, default=0.0)
+    ap.add_argument("--min-step", type=float, default=MIN_STEP,
+                    help="порог медленного шага: доля уменьшения (по умолчанию 0.035)")
+    ap.add_argument("--min-tokens", type=int, default=MIN_TOKENS,
+                    help="плато только если токенов за два последних шага больше (по умолчанию 50000)")
     a = ap.parse_args(argv)
     try:
         text = Path(a.journal).read_text(encoding="utf-8", errors="replace")
@@ -198,11 +225,18 @@ def main(argv=None) -> int:
     by = {}
     for p in pts:
         by.setdefault(p["name"], []).append(p)
-    results = {n: analyze_metric(ps, a.target) for n, ps in by.items()}
+    results = {n: analyze_metric(ps, a.target, a.min_step, a.min_tokens) for n, ps in by.items()}
+    # текущая метрика - с самой поздней строкой в журнале; остальные закрыты (переопределены)
+    cur = max(results, key=lambda n: by[n][-1]["line"]) if results else None
+    for n, r in results.items():
+        if n != cur:
+            r["closed"] = True
+            r["flags"] = ["закрыта (переопределена)"]
     changed = find_targets(text, a.target)
     if changed:
         for r in results.values():
-            r["flags"].append("ЦЕЛЬ ИЗМЕНЕНА")
+            if not r.get("closed"):
+                r["flags"].append("ЦЕЛЬ ИЗМЕНЕНА")
     L = []
     if not results:
         L += ["!" * 60, "МЕТРИКИ НЕТ - КОМАНДА ИДЁТ ВСЛЕПУЮ", "!" * 60]
@@ -214,8 +248,12 @@ def main(argv=None) -> int:
         for i, (s, e) in enumerate(r["steps"], 1):
             d = s - e
             pct = f"{d / s * 100:+.0f}%" if s else "н/д"
-            L.append(f"  шаг {i}: {fmt(s)} -> {fmt(e)}, уменьшение {fmt(d)} ({pct})")
+            note = "  [скачок - проверь, не сменился ли учёт]" if is_jump(s, e) else ""
+            L.append(f"  шаг {i}: {fmt(s)} -> {fmt(e)}, уменьшение {fmt(d)} ({pct}){note}")
         L.append("  флаги: " + (", ".join(r["flags"]) or "нет"))
+        if r.get("closed"):
+            L.append("")
+            continue
         if r["left"] is not None:
             L.append(f"  прогноз: при темпе {fmt(r['rate'])} за отрезок до цели ещё {r['left']} отрезк.")
         elif "ЦЕЛЬ" not in r["flags"]:
@@ -242,7 +280,7 @@ def main(argv=None) -> int:
     if cost is not None:
         L.append(f"Стоимость: ${cost:.2f}" + (" (оценка по ценам Haiku 4.5)" if est else ""))
     if a.budget_usd is not None:
-        main_r = next((r for r in results.values() if "ЦЕЛЬ" not in r["flags"]), None)
+        main_r = results.get(cur) if cur and "ЦЕЛЬ" not in results[cur]["flags"] else None
         nseg = max([p["seg"] for p in pts if p["seg"]] + [len(r["vals"]) for r in results.values()] + [0])
         if cost is None:
             L.append("Бюджет: стоимость неизвестна - дай --stats.")
@@ -256,7 +294,7 @@ def main(argv=None) -> int:
             ok = cost + need <= a.budget_usd
             L.append(f"Бюджет ${a.budget_usd:.2f}: потрачено ${cost:.2f}, до цели ещё ~${need:.2f} "
                      f"({main_r['left']} отрезк. по ${per:.2f}) - " + ("хватит." if ok else "НЕ хватит."))
-    L.append("вывод: " + verdict(results, changed, a.target))
+    L.append("вывод: " + verdict(results, changed, a.target, a.min_step))
     print("\n".join(L))
     return 0
 
