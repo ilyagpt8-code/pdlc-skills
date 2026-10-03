@@ -11,3 +11,10 @@
 - specification_reviewed: yes [executor]
 - specification_completeness: confirmed ready for implementation [executor]
 - confirmation_sent: yes [executor]
+
+## Ход 2: Expert (Decision)
+
+- specification_accepted: yes [expert]
+- mail_acceptance_sent: yes [expert]
+
+ГОТОВО: спецификация tempconv полная, проверена и принята, готова к реализации другой командой
