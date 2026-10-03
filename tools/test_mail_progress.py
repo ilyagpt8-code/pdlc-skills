@@ -334,3 +334,113 @@ def test_progress_jump_flag(tmp_path, capsys):
     assert out.strip().splitlines()[-1] == "вывод: скачок - проверь учёт, прежде чем считать прогрессом."
     out = run_p(capsys, journal(tmp_path, "\n".join([seg(1, "q", 100, "a"), seg(2, "q", 60, "b")])))
     assert "СКАЧОК" not in out  # ровно 40 % - не скачок
+
+
+# ---------------------------------------------------------------- доработки по живому ансамблю
+def L(ts, text):
+    return f"2026-01-01T{ts}Z\n\n{text}\n"
+
+
+def waits_of(tmp_path, letters):
+    p = mk_mail(tmp_path, letters)
+    return M.analyze(M.load(p), (), 5)
+
+
+def test_bare_three_digit_number_is_not_a_reference(tmp_path):
+    p = mk_mail(tmp_path, [
+        ("001-a-to-b.md", "Прошу сделать X?"),
+        ("002-b-to-c.md", "Тест прошёл за 001 секунд, версия 001."),
+    ])
+    assert "a ждёт b" in run_mail(p)                       # раньше любое «001» считалось ссылкой
+
+
+def test_reply_within_two_hours_only(tmp_path):
+    a = waits_of(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
+        ("002-b-to-a.md", L("11:59:00", "Сделал, вот результат.")),
+    ])
+    assert not a["waits"]
+    d = tmp_path / "late"
+    d.mkdir()
+    a = waits_of(d, [
+        ("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
+        ("002-b-to-a.md", L("12:30:00", "Сделал, вот результат.")),
+    ])
+    assert ("a", "b") in a["waits"]                          # ответ позже 2 ч - не связан с письмом
+
+
+def test_reply_must_go_to_sender(tmp_path):
+    a = waits_of(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
+        ("002-b-to-c.md", L("10:05:00", "Сделал, вот результат.")),
+    ])
+    assert ("a", "b") in a["waits"]                          # b ответил не отправителю
+
+
+def test_other_topic_between_keeps_waiting(tmp_path):
+    a = waits_of(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", "Прошу собрать отчёт по продажам за квартал?")),
+        ("002-a-to-b.md", L("10:01:00", "Совсем другое: проверь права доступа к репозиторию кластера.")),
+        ("003-b-to-a.md", L("10:10:00", "Права доступа к репозиторию кластера проверил, всё работает.")),
+    ])
+    assert ("a", "b") in a["waits"] and a["waits"][("a", "b")] == ["001-a-to-b.md"]
+
+
+def test_new_wait_signals(tmp_path):
+    cases = {"На слияние: ветка x, 3c62c17.": "на слияние", "ГОТОВО (02:27). Мост переложен.": "готово",
+             "Прогон — BLOCKED на prepare.": "BLOCKED", "Принят на ревью, жду разбора.": "на ревью",
+             "Сколько это займёт?": "вопрос"}
+    for i, (text, sig) in enumerate(cases.items(), 1):
+        assert sig in M.signals_of(text), text
+    assert "готово" not in M.signals_of("x" * 200 + " готово")          # «готово» вдали от начала - не отчёт
+    assert M.signals_of("Влил fast-forward, всё закрыто.") == []        # уже сделано
+    assert "жду" not in M.signals_of("Жду слова оператора.")             # ждёт не адресата
+
+
+def test_confirmations_do_not_wait(tmp_path):
+    letters = [(f"{i:03d}-a-to-b.md", L(f"10:0{i}:00", t)) for i, t in enumerate([
+        "Ответ по задаче X: сделано, прошу проверить.", "Принято, жду результата.",
+        "Спасибо! Как дела?", "Извините, моя ошибка — прошу прощения. Что дальше?",
+        "abc1234 принимаю, проверь остальное."], 1)]
+    a = waits_of(tmp_path, letters)
+    assert not a["waits"]
+
+
+def test_age_and_order_in_waits(tmp_path):
+    p = mk_mail(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", "Прошу сделать X.")),
+        ("002-c-to-b.md", L("10:30:00", "Прошу сделать Y.")),
+        ("003-x-to-y.md", L("13:00:00", "Привет, просто сообщаю.")),
+    ])
+    a = M.analyze(M.load(p), (), 5)
+    assert [i["name"] for i in a["wait_items"]] == ["001-a-to-b.md", "002-c-to-b.md"]   # старые сверху
+    assert a["wait_items"][0]["age"] == 3 * 3600
+    out = M.render(a, 3)
+    assert "001-a-to-b.md (возраст 3ч 00м" in out and "возраст 2ч 30м" in out
+    assert out.index("001-a-to-b.md (возраст") < out.index("002-c-to-b.md (возраст")
+
+
+def test_repeat_signal(tmp_path):
+    q = "Один вопрос о стыке ПЛК и робота перед окном карточки двойника: гаснет ли STOPMESS сам, или нужен импульс CONF_MESS?"
+    a = waits_of(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", q)),
+        ("002-a-to-b.md", L("10:03:00", "Повторяю вопрос после перезапуска. " + q)),
+    ])
+    assert [(r["name"], r["orig"], r["replied"]) for r in a["repeats"]] == [("002-a-to-b.md", "001-a-to-b.md", False)]
+    out = M.render(a, 2)
+    assert "повтор без ответа" in out and "002-a-to-b.md повторяет 001-a-to-b.md" in out
+    # просто похожие слова без «повторяю» и без почти полного совпадения - не повтор
+    d = tmp_path / "x"
+    d.mkdir()
+    a2 = waits_of(d, [("001-a-to-b.md", L("10:00:00", q)),
+                      ("002-a-to-b.md", L("10:03:00", "Прошу сообщить статус сборки образа и тестов?"))])
+    assert not a2["repeats"]
+
+
+def test_subagents_folded_and_never_wait(tmp_path):
+    a = waits_of(tmp_path, [
+        ("001-a-to-a_sub_a1b2c3d4e.md", L("10:00:00", "Прошу уточнить пункт 2?")),
+        ("002-a_sub_a9f8e7d6c-to-a.md", L("10:05:00", "Итоги работы, жду приёмки.")),
+    ])
+    assert not a["waits"]
+    assert "a_sub" in a["roles"] and not any("_sub_" in r for r in a["roles"])

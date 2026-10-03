@@ -11,10 +11,15 @@
   <выход>/stats.md                     (session_stats summary по тем же журналам)
 
 Входящее: блок <cross-session-message from=".." name=".."> (также атрибуты
-from-session / from-name) в тексте пользовательской записи.
+from-session / from-name) в тексте пользовательской записи, в queue-operation (enqueue)
+и в attachment (queued_command); один блок из разных записей - одно письмо.
 Исходящее: вызов SendMessage (to, message) или mcp__ccd_session_mgmt__send_message
 (session_id, message). Одно письмо, видимое у отправителя и получателя, склеивается
-по времени (±2 мин) и тексту. Неизвестные участники - роль other.
+по (отправитель, получатель, текст) в пределах 12 ч (доставка может ждать в очереди).
+Адресат - id/uds-канал/local_<uuid>: роль берётся из таблицы «id -> роль», собранной по полям
+from, from-session, from-name, name всех входящих. Субагент (agentId из записи запуска Agent)
+- роль "<роль>/sub:<id>"; его <task-notification> - письмо от него. Внешняя сессия без журнала
+- other:<заголовок>. Неизвестные участники - other.
 Только стандартная библиотека.
 """
 from __future__ import annotations
@@ -28,9 +33,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import session_stats as S  # noqa: E402
 
-MERGE_SEC = 120
+MERGE_SEC = 12 * 3600      # доставка ждёт в очереди 4-10 мин, иногда часы
 BLOCK_RE = re.compile(r"<cross-session-message\b([^>]*)>(.*?)</cross-session-message>", re.S)
-ID_RE = re.compile(r"^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+ID_RE = re.compile(r"^(?:(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|uds:\S+)$", re.I)
+AGENT_ID_RE = re.compile(r"^a[0-9a-f]{16}$")
+AGENT_RES_RE = re.compile(r"agentId:\s*(a[0-9a-f]{16})")
+# ответ инструмента отправки: письмо не доставлено (адресат недоступен, лимит, сбой канала)
+FAILED_RE = re.compile(r'"success"\s*:\s*false|^\s*Not delivered|Failed to send to', re.I)
+STUB_RE = re.compile(r"report was delivered to you as a message from", re.I)   # заглушка без содержания
+NOTIF_RE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
 ATTR_RE = re.compile(r'([\w-]+)\s*=\s*"([^"]*)"')
 SEND_TOOLS = {"SendMessage": "to", "mcp__ccd_session_mgmt__send_message": "session_id"}
 OTHER = "other"
@@ -71,67 +82,152 @@ def role_resolver(pairs, titles=None, aliases=None):
     """pairs [(роль, путь)] -> функция(идентификаторы...) -> роль или other.
 
     Идентификатор: id из имени файла журнала, имя роли, заголовок сессии (titles:
-    роль -> множество заголовков) или выученный псевдоним id (aliases: id -> роль;
-    у живых ансамблей id вида local_<uuid> не равен имени файла журнала, его связывают
-    с ролью через name="..." входящего письма, равное заголовку сессии)."""
+    роль -> множество заголовков) или выученный псевдоним id (aliases: id -> роль; у живых
+    ансамблей id вида local_<uuid> и uds-канал не равны имени файла журнала, их связывают
+    с ролью через name/from-name входящего письма, равное заголовку сессии; субагент -
+    через agentId -> "<роль>/sub:<id>"; внешняя сессия - "other:<имя>")."""
     by_id = {_sid(Path(p).stem): r for r, p in pairs}
     by_name = {r.lower(): r for r, _ in pairs}
     by_title = {t: r for r, ts in (titles or {}).items() for t in ts}
     aliases = aliases if aliases is not None else {}
 
     def resolve(*keys):
+        other = None
         for k in keys:
             if not k:
                 continue
             sk, lk = _sid(k), _norm(str(k)).lower()
             for table, key in ((by_id, sk), (aliases, sk), (by_name, lk), (by_title, lk)):
                 if key in table:
-                    return table[key]
-        return OTHER
+                    v = table[key]
+                    if v.startswith(OTHER + ":"):
+                        other = other or v      # внешняя: ищем роль по остальным ключам
+                        continue
+                    return v
+        return other or OTHER
     return resolve
 
 
+def _blocks(text):
+    """Блоки <cross-session-message ...> текста: [(атрибуты, тело)]; цитаты без id пропущены."""
+    out = []
+    for m in BLOCK_RE.finditer(text or ""):
+        at = dict(ATTR_RE.findall(m.group(1)))
+        if ID_RE.match(at.get("from-session") or at.get("from") or ""):
+            out.append((at, m.group(2).strip()))
+    return out
+
+
 def learn_aliases(recs_by_role, titles):
-    """id отправителя -> роль, по совпадению name входящего письма с заголовком роли."""
+    """Таблица «id -> роль» по всем входящим всех журналов.
+
+    Поля from (uds-канал), from-session (local_<uuid>) и имя (from-name или name) одного блока
+    называют одного отправителя: имя равно заголовку сессии роли -> все его id = эта роль;
+    имя ансамблю неизвестно -> other:<имя> (внешняя сессия без журнала). Роль не затирается
+    значением other."""
     by_title = {t: r for r, ts in titles.items() for t in ts}
     al = {}
     for recs in recs_by_role.values():
         for r in recs:
             if r["kind"] != "user" or "cross-session-message" not in r["text"]:
                 continue
-            for m in BLOCK_RE.finditer(r["text"]):
-                at = dict(ATTR_RE.findall(m.group(1)))
-                role = by_title.get(_norm(at.get("from-name") or at.get("name") or "").lower())
-                fid = _sid(at.get("from-session") or at.get("from"))
-                if role and ID_RE.match(fid):
+            for at, _body in _blocks(r["text"]):
+                name = _norm(at.get("from-name") or at.get("name") or "")
+                if not name:
+                    continue
+                role = by_title.get(name.lower()) or f"{OTHER}:{name}"
+                for k in ("from", "from-session"):
+                    fid = _sid(at.get(k))
+                    if not (fid and ID_RE.match(fid)):
+                        continue
+                    if role.startswith(OTHER + ":") and al.get(fid, OTHER + ":").split(":")[0] != OTHER:
+                        continue
                     al[fid] = role
     return al
 
 
-def extract(role, recs, resolve, since=None, until=None):
-    """Письма одной сессии: список dict(ts, frm, to, text, side)."""
+def learn_agents(recs_by_role):
+    """agentId -> "<роль>/sub:<id>" по записям запуска Agent в журналах отправителей."""
+    out = {}
+    for role, recs in recs_by_role.items():
+        for r in recs:
+            for _tid, _err, txt in r.get("results", ()):
+                for aid in AGENT_RES_RE.findall(txt or ""):
+                    out[aid] = f"{role}/sub:{aid[:9]}"
+    return out
+
+
+def raw_mail_items(path):
+    """Входящие из queue-operation (enqueue) и attachment (queued_command) JSONL-журнала
+    как записи вида user (src=queue/attachment). Для не-JSONL (list_events) - пусто."""
     out = []
+    try:
+        f = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    with f:
+        for line in f:
+            if "cross-session-message" not in line and "<task-notification>" not in line:
+                continue
+            if '"queue-operation"' not in line and '"queued_command"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(o, dict):
+                continue
+            if o.get("type") == "queue-operation" and o.get("operation") == "enqueue":
+                text, src = o.get("content"), "queue"
+            elif o.get("type") == "attachment" and isinstance(o.get("attachment"), dict) \
+                    and o["attachment"].get("type") == "queued_command":
+                text, src = S._block_text(o["attachment"].get("prompt")), "attachment"
+            else:
+                continue
+            ts = S._parse_ts(o.get("timestamp"))
+            if isinstance(text, str) and ts is not None:
+                out.append({"kind": "user", "ts": ts, "text": text, "tools": [], "results": [], "src": src})
+    return out
+
+
+def extract(role, recs, resolve, since=None, until=None):
+    """Письма одной сессии: список dict(ts, frm, to, text, side, src)."""
+    out = []
+    failed = {tid for r in recs for tid, err, txt in r.get("results", ()) if err or FAILED_RE.search(txt or "")}
     for r in recs:
         ts = r["ts"]
         if ts is None or (since and ts < since) or (until and ts > until):
             continue
-        if r["kind"] == "user" and "cross-session-message" in r["text"]:
-            for m in BLOCK_RE.finditer(r["text"]):
-                at = dict(ATTR_RE.findall(m.group(1)))
-                if not ID_RE.match(at.get("from-session") or at.get("from") or ""):
-                    continue            # тег процитирован в обычном тексте, не письмо
-                frm = resolve(at.get("from-session"), at.get("from"), at.get("from-name"), at.get("name"))
-                out.append({"ts": ts, "frm": frm, "to": role, "text": m.group(2).strip(), "side": "in"})
+        if r["kind"] == "user":
+            src = r.get("src", "user")
+            if "cross-session-message" in r["text"]:
+                for at, body in _blocks(r["text"]):
+                    frm = resolve(at.get("from-session"), at.get("from"), at.get("from-name"), at.get("name"))
+                    out.append({"ts": ts, "frm": frm, "to": role, "text": body, "side": "in", "src": src})
+            if "<task-notification>" in r["text"]:
+                for m in NOTIF_RE.finditer(r["text"]):
+                    tid = re.search(r"<task-id>\s*(\S+?)\s*</task-id>", m.group(1))
+                    frm = resolve(tid.group(1)) if tid else OTHER
+                    if "/sub:" not in frm:
+                        continue            # не субагент (фоновая команда и т.п.) - не письмо
+                    body = re.search(r"<result>(.*?)</result>", m.group(1), re.S) \
+                        or re.search(r"<summary>(.*?)</summary>", m.group(1), re.S)
+                    if body and body.group(1).strip() and not STUB_RE.search(body.group(1)):
+                        out.append({"ts": ts, "frm": frm, "to": role, "text": body.group(1).strip(),
+                                    "side": "in", "src": src})
         elif r["kind"] == "assistant":
             for _id, name, inp in r["tools"]:
                 key = SEND_TOOLS.get(name)
-                if not key:
+                if not key or _id in failed:       # недоставленное - не письмо
                     continue
                 msg = inp.get("message")
                 if not isinstance(msg, str) or not msg.strip():
                     continue
                 to = resolve(inp.get(key))
-                out.append({"ts": ts, "frm": role, "to": to, "text": msg.strip(), "side": "out"})
+                raw_to = _norm(str(inp.get(key) or ""))
+                if to == OTHER and raw_to and not ID_RE.match(raw_to) and not AGENT_ID_RE.match(raw_to):
+                    to = f"{OTHER}:{raw_to}"        # внешняя сессия, названная заголовком
+                out.append({"ts": ts, "frm": role, "to": to, "text": msg.strip(), "side": "out", "src": "out"})
     return out
 
 
@@ -142,28 +238,43 @@ def _same(a: str, b: str) -> bool:
     if a == b or a in b or b in a:
         return True
     n = min(len(a), len(b), 200)
-    return a[:n] == b[:n]
+    # копии одного письма отличаются мелочью; разной длины (повторный отчёт) - разные письма
+    return a[:n] == b[:n] and min(len(a), len(b)) >= 0.9 * max(len(a), len(b))
 
 
 def merge(msgs):
-    """Склеивает исходящее у отправителя и входящее у получателя; сортирует по времени."""
-    kept = []
+    """Склеивает копии одного письма: исходящее у отправителя и входящее у получателя
+    (из записи пользователя, queue-operation, attachment) - по (отправитель, получатель, текст)
+    без точного окна: в пределах MERGE_SEC. Каждый канал даёт копию письма не больше одного
+    раза, поэтому два одинаковых письма подряд остаются двумя. Сортировка по времени."""
+    clusters = []
     for m in sorted(msgs, key=lambda x: x["ts"]):
-        dup = None
-        for k in reversed(kept):
-            if (m["ts"] - k["ts"]).total_seconds() > MERGE_SEC:
-                break
-            if k["side"] != m["side"] and k["frm"] == m["frm"] and k["to"] == m["to"] \
-                    and _same(k["text"], m["text"]):
-                dup = k
-                break
-        if dup is None:
-            kept.append(dict(m))
+        ch = m.get("src") or ("out" if m["side"] == "out" else "user")
+        best = None
+        for k in clusters:
+            if ch in k["chans"] or k["frm"] != m["frm"] or k["to"] != m["to"]:
+                continue
+            gap = abs((m["ts"] - k["ts"]).total_seconds())
+            if gap > MERGE_SEC or not _same(k["text"], m["text"]):
+                continue
+            if best is None or gap < best[0]:
+                best = (gap, k)
+        if best is None:
+            clusters.append({"ts": m["ts"], "frm": m["frm"], "to": m["to"], "text": m["text"],
+                             "chans": {ch}, "sides": {m["side"]}})
         else:
-            dup["side"] = "both"
-            if len(m["text"]) > len(dup["text"]):
-                dup["text"] = m["text"]
-    return kept
+            k = best[1]
+            k["chans"].add(ch)
+            k["sides"].add(m["side"])
+            k["ts"] = min(k["ts"], m["ts"])
+            if len(m["text"]) > len(k["text"]):
+                k["text"] = m["text"]
+    out = []
+    for k in clusters:
+        side = "both" if len(k["sides"]) > 1 else next(iter(k["sides"]))
+        out.append({"ts": k["ts"], "frm": k["frm"], "to": k["to"], "text": k["text"], "side": side})
+    out.sort(key=lambda x: x["ts"])
+    return out
 
 
 def anonymize(text, words):
@@ -173,7 +284,7 @@ def anonymize(text, words):
 
 
 def safe_role(r):
-    return re.sub(r"[^\w.\-]+", "_", r) or OTHER
+    return re.sub(r"[^\w.\-]+", "_", r).strip("_")[:48] or OTHER
 
 
 def metric_lines(recs, since=None, until=None):
@@ -192,12 +303,15 @@ def build(outdir, pairs, since=None, until=None, anon_words=None):
     """Основная работа; возвращает (число_писем, число_метрик)."""
     roles = [r for r, _ in pairs]
     data = {role: S.read_journal(path) for role, path in pairs}
+    mailrecs = {r: data[r][0] + raw_mail_items(p) for r, p in pairs}   # + queue-operation, attachment
     titles = {role: journal_titles(path) for role, path in pairs}
-    resolve = role_resolver(pairs, titles, learn_aliases({r: d[0] for r, d in data.items()}, titles))
+    aliases = learn_aliases(mailrecs, titles)
+    aliases.update(learn_agents({r: d[0] for r, d in data.items()}))
+    resolve = role_resolver(pairs, titles, aliases)
     allm, metrics, results = [], [], []
     for role, path in pairs:
         recs, total, skipped = data[role]
-        allm += extract(role, recs, resolve, since, until)
+        allm += extract(role, mailrecs[role], resolve, since, until)
         metrics += metric_lines(recs, since, until)
         results.append(S.analyze(role, recs, total, skipped, roles, since, until))
     mails = merge(allm)
@@ -208,7 +322,8 @@ def build(outdir, pairs, since=None, until=None, anon_words=None):
         old.unlink()
     for i, m in enumerate(mails, 1):
         text = anonymize(m["text"], anon_words) if anon_words else m["text"]
-        name = f"{i:03d}-{safe_role(m['frm'])}-to-{safe_role(m['to'])}.md"
+        lab = (lambda x: anonymize(x, anon_words)) if anon_words else (lambda x: x)
+        name = f"{i:03d}-{safe_role(lab(m['frm']))}-to-{safe_role(lab(m['to']))}.md"
         (mdir / name).write_text(f"{m['ts'].strftime('%Y-%m-%dT%H:%M:%SZ')}\n\n{text}\n", encoding="utf-8")
     metrics.sort(key=lambda x: x[0])
     (out / "journal.md").write_text(

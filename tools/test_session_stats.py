@@ -285,3 +285,76 @@ def test_cost_from_log_result_line(tmp_path):
     r = S.analyze("p", *S.read_journal(p), ["p"])
     assert r["стоимость"] == {"usd": 1.5, "источник": "из журнала"}
     assert "стоимость: $1.50 (из журнала)" in S.render_text([r])
+
+
+# ---------------------------------------------------------------- цены по модели, cost-state
+def model_journal(tmp_path, model, name="m.jsonl", extra=(), usage=None):
+    u = usage or {"input_tokens": 1_000_000, "output_tokens": 1_000_000,
+                  "cache_read_input_tokens": 1_000_000, "cache_creation_input_tokens": 1_000_000}
+    a = A("2026-01-01T10:00:05Z", [{"type": "text", "text": "ответ"}], "m1", u)
+    if model:
+        a["message"]["model"] = model
+    return write(tmp_path, name, [U("2026-01-01T10:00:00Z", "задание достаточно длинное для проверки"), a, *extra], junk=False)
+
+
+def cost_of(path, **kw):
+    recs, t, s = S.read_journal(path)
+    return S.analyze("p", recs, t, s, ["p"], **kw)["стоимость"]
+
+
+def test_price_table_by_message_model(tmp_path):
+    # на 1 млн токенов каждого вида: вход + вывод + чтение кэша + запись кэша
+    assert cost_of(model_journal(tmp_path, "claude-haiku-4-5-20251001"))["usd"] == 1 + 5 + 0.10 + 1.25
+    assert cost_of(model_journal(tmp_path, "claude-opus-5-5", "o.jsonl"))["usd"] == 4 + 20 + 0.2 + 8
+    assert cost_of(model_journal(tmp_path, "claude-sonnet-5-5", "s.jsonl"))["usd"] == 2 + 10 + 0.2 + 2.5
+    c = cost_of(model_journal(tmp_path, "claude-opus-5-5", "o2.jsonl"))
+    assert "Opus 5.5" in c["цены"] and "допущение" in c["цены"]
+    # без модели и неизвестная модель - Haiku 4.5 (поведение журналов прогонов)
+    assert cost_of(model_journal(tmp_path, None, "n.jsonl"))["usd"] == 7.35
+    assert "нет цены для claude-fable-9" in cost_of(model_journal(tmp_path, "claude-fable-9", "f.jsonl"))["цены"]
+
+
+def test_price_table_mixed_models_and_prices_flag(tmp_path):
+    u = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    b = A("2026-01-01T10:00:06Z", [{"type": "text", "text": "второй"}], "m2", u)
+    b["message"]["model"] = "claude-opus-5-5"
+    p = model_journal(tmp_path, "claude-haiku-4-5", "mix.jsonl", extra=[b], usage=u)
+    assert cost_of(p)["usd"] == 1 + 4                         # Haiku 1 + Opus 4 за 1 млн входа
+    assert cost_of(p, prices=(10, 0, 0, 0))["usd"] == 20       # --prices перекрывает таблицу
+
+
+def test_prices_flag_still_overrides_cli(tmp_path, capsys):
+    p = model_journal(tmp_path, "claude-opus-5-5")
+    assert S.main(["summary", f"p={p}", "--json", "--prices", "1,1,1,1"]) == 0
+    assert json.loads(capsys.readouterr().out)["total_cost_usd"] == 4
+
+
+def test_cost_state_shown_and_warning(tmp_path):
+    cs = {"type": "cost-state", "sessionId": "s", "totalCostUSD": 5.0}
+    cs2 = {"type": "cost-state", "sessionId": "s", "totalCostUSD": 100.0}
+    p = model_journal(tmp_path, "claude-opus-5-5", extra=[cs, cs2])     # оценка 32.2, журнал 100 (последний)
+    c = cost_of(p)
+    assert c["по_журналу"] == 100.0 and c["usd"] == 32.2 and "предупреждение" in c
+    recs, t, s = S.read_journal(p)
+    out = S.render_text([S.analyze("p", recs, t, s, ["p"])])
+    assert "по журналу (cost-state): $100.00" in out and "ВНИМАНИЕ" in out
+    # расхождение в пределах 25% - без предупреждения
+    ok = model_journal(tmp_path, "claude-opus-5-5", "ok.jsonl",
+                       extra=[{"type": "cost-state", "sessionId": "s", "totalCostUSD": 30.0}])
+    c2 = cost_of(ok)
+    assert c2["по_журналу"] == 30.0 and "предупреждение" not in c2
+
+
+def test_haiku_subagent_journals_of_runs_unchanged():
+    """Журналы прогонов (Haiku-сабагенты): итоги прежние."""
+    runs = Path(__file__).resolve().parent.parent / "runs"
+    for run, expect in (("003", 1.55), ("004", 1.07)):
+        files = sorted((runs / run / "journals").glob("*.jsonl"))
+        if not files:
+            continue
+        old = new = 0.0
+        for f in files:
+            recs, t, s = S.read_journal(str(f))
+            new += S.analyze(f.stem, recs, t, s, [f.stem])["стоимость"]["usd"]
+            old += S.analyze(f.stem, recs, t, s, [f.stem], prices=(1.0, 5.0, 0.10, 1.25))["стоимость"]["usd"]
+        assert round(new, 2) == round(old, 2) == expect
