@@ -38,3 +38,9 @@
 метрика: tempconv_fails=1 (было 1) [источник: проверки producer по 35 случаям]
 
 отрезок 2: метрика tempconv_fails=1 (было 1) [источник: проверки producer по tester-checks.md], готовность=97% (34/35)
+
+## Сверка хода 2 (choreographer)
+
+сверка: принимающий=expert принял=нет; результат out/007-A1/tempconv.py есть=да, не исправлен (case 28 остаётся); ждут=executor ждёт expert на 003, producer требует ответ executor перед ходом 3
+
+**Разрыв:** Producer в письме `006-producer-to-executor.md` просит executor статус исправления перед ходом 3, но executor молчит. Отправлено письмо `007-choreographer-to-executor.md` с напоминанием о требуемом ответе.
