@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -26,6 +27,8 @@ TARGET_RE = re.compile(rf"(?:цель|целев[а-яё]*|target)\s*(?:метр
                        rf"(?:[:=]\s*)?(?:[^\s\d≤<=:]+\s*)?(?:≤|<=|=|<)?\s*({NUM})", re.I)
 MIN_STEP = 0.035      # доля уменьшения, ниже которой шаг медленный
 MIN_TOKENS = 50000    # плато только если на два последних шага ушло больше токенов
+WALL_FACTOR = 3.0     # стена: потрачено >= factor x медиана токенов отрезка с прогрессом
+WALL_TOKENS = 300000  # стена без истории прогресса: потрачено >= столько без заметного уменьшения
 JUMP = 0.40           # скачок значения - информационный флаг
 SKIP_NAMES = {"всего", "отрезок", "токены"}
 # Haiku 4.5, USD за токен
@@ -119,7 +122,28 @@ def is_jump(start, end):
     return abs(end - start) / abs(start) > JUMP
 
 
-def analyze_metric(points, target, min_step=MIN_STEP, min_tokens=MIN_TOKENS):
+def find_wall(steps, step_tok, min_step=MIN_STEP, wall_factor=WALL_FACTOR, wall_tokens=WALL_TOKENS):
+    """Стена: много токенов потрачено с последнего заметного уменьшения, а метрика не сдвинулась.
+    -> None или dict(spent, median, k). median/k = None, если истории с прогрессом нет."""
+    last_good = max((i for i, (a, b) in enumerate(steps) if not is_flat(a, b, min_step)), default=-1)
+    tail = step_tok[last_good + 1:]
+    if len(tail) < 2:     # один дорогой шаг - ещё не стена
+        return None
+    spent = sum(t or 0 for t in tail)
+    hist = [t for (a, b), t in zip(steps[:last_good + 1], step_tok[:last_good + 1])
+            if a - b > 0 and t is not None]
+    if hist:
+        med = statistics.median(hist)
+        if med > 0 and spent >= wall_factor * med:
+            return {"spent": spent, "median": med, "k": spent / med}
+        return None
+    if spent >= wall_tokens:
+        return {"spent": spent, "median": None, "k": None}
+    return None
+
+
+def analyze_metric(points, target, min_step=MIN_STEP, min_tokens=MIN_TOKENS,
+                   wall_factor=WALL_FACTOR, wall_tokens=WALL_TOKENS):
     vals, steps, step_tok = series(points)
     last = vals[-1]["value"]
     flags = []
@@ -133,6 +157,11 @@ def analyze_metric(points, target, min_step=MIN_STEP, min_tokens=MIN_TOKENS):
             # токены неизвестны - порог считается выполненным
             if any(t is None for t in tk) or sum(tk) > min_tokens:
                 flags.append("ПЛАТО")
+    wall = None
+    if last > target:
+        wall = find_wall(steps, step_tok, min_step, wall_factor, wall_tokens)
+        if wall:
+            flags.append("СТЕНА")
     if any(is_jump(a, b) for a, b in steps):
         flags.append("СКАЧОК")
     if len(steps) <= 1 and last <= target and vals and (len(vals) <= 2):
@@ -146,7 +175,7 @@ def analyze_metric(points, target, min_step=MIN_STEP, min_tokens=MIN_TOKENS):
     left = None
     if last > target and rate and rate > 0:
         left = math.ceil((last - target) / rate)
-    return {"vals": vals, "steps": steps, "min_step": min_step, "flags": flags, "last": last, "rate": rate, "left": left}
+    return {"vals": vals, "steps": steps, "min_step": min_step, "wall": wall, "flags": flags, "last": last, "rate": rate, "left": left}
 
 
 def parse_stats(text: str):
@@ -183,6 +212,13 @@ def verdict(results, changed=None, target=0.0, min_step=MIN_STEP):
         return "цель достигнута - проверь приёмку."
     act = [r for r in results.values() if "ЦЕЛЬ" not in r["flags"]]
     for r in act:
+        w = r.get("wall")
+        if w:
+            how = (f"в {w['k']:.1f} раза больше обычного отрезка с прогрессом" if w["k"] is not None
+                   else "истории прогресса нет")
+            return (f"стена: потрачено {w['spent']} токенов с последнего прогресса ({how}), результата нет - "
+                    "путь исчерпан; спроси владельца, можно ли иначе (другой инструмент, источник, доступ).")
+    for r in act:
         if len(r["steps"]) == 1 and is_jump(*r["steps"][0]):
             return "скачок - проверь учёт, прежде чем считать прогрессом."
     if any("РОСТ" in r["flags"] for r in act):
@@ -215,6 +251,10 @@ def main(argv=None) -> int:
                     help="порог медленного шага: доля уменьшения (по умолчанию 0.035)")
     ap.add_argument("--min-tokens", type=int, default=MIN_TOKENS,
                     help="плато только если токенов за два последних шага больше (по умолчанию 50000)")
+    ap.add_argument("--wall-factor", type=float, default=WALL_FACTOR,
+                    help="стена: потрачено >= factor x медианы токенов отрезка с прогрессом (по умолчанию 3)")
+    ap.add_argument("--wall-tokens", type=int, default=WALL_TOKENS,
+                    help="стена без истории прогресса: потрачено токенов без уменьшения (по умолчанию 300000)")
     a = ap.parse_args(argv)
     try:
         text = Path(a.journal).read_text(encoding="utf-8", errors="replace")
@@ -225,13 +265,13 @@ def main(argv=None) -> int:
     by = {}
     for p in pts:
         by.setdefault(p["name"], []).append(p)
-    results = {n: analyze_metric(ps, a.target, a.min_step, a.min_tokens) for n, ps in by.items()}
+    results = {n: analyze_metric(ps, a.target, a.min_step, a.min_tokens, a.wall_factor, a.wall_tokens) for n, ps in by.items()}
     # текущая метрика - с самой поздней строкой в журнале; остальные закрыты (переопределены)
     cur = max(results, key=lambda n: by[n][-1]["line"]) if results else None
     for n, r in results.items():
         if n != cur:
             r["closed"] = True
-            r["flags"] = ["закрыта (переопределена)"]
+            r["flags"] = ["закрыта (переопределена)"] + (["СТЕНА"] if r.get("wall") else [])
     changed = find_targets(text, a.target)
     if changed:
         for r in results.values():
@@ -259,6 +299,11 @@ def main(argv=None) -> int:
         elif "ЦЕЛЬ" not in r["flags"]:
             L.append("  прогноз: цель не приближается (темп не больше нуля)")
         L.append("")
+    walls = [n for n, r in results.items() if r.get("wall")]
+    if walls:
+        L.append("СТЕНА по метрикам: " + ", ".join(
+            f"{n} ({results[n]['wall']['spent']} ток.)" + (" [закрыта]" if results[n].get("closed") else "")
+            for n in walls))
     if nosrc:
         L.append("БЕЗ ИСТОЧНИКА: строки журнала " + ", ".join(map(str, nosrc[:10])))
     seg_tokens = sum(p["tokens"] or 0 for p in pts if p["kind"] == "seg")

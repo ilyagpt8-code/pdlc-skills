@@ -1,0 +1,54 @@
+# Описание ансамбля по прогону 007 (приложение tempconv по спецификациям 006, тестировщик в обоих плечах).
+run = "007"
+title = "приложение tempconv"
+deliverable = "работу"
+result_path = "out/{run}-{X}/tempconv.py"
+budget_usd = 1
+max_rounds = 12
+owner_questions = false
+# compass = "specs/compass.md"        # необязательно
+# accept_role = "producer"            # по умолчанию: producer, если он есть, иначе expert
+tests_path = "out/{run}-{X}/tests"  # необязательно: после стопа расписание гонит pytest
+
+task = """
+Напишите утилиту `tempconv` строго по спецификации `out/006-{X}/tempconv.md`. Язык — Python 3 (стандартная библиотека). Код — `{out}`, тесты (pytest) — `out/{run}-{X}/tests/`. Запуск: `python {out} <аргументы>` (пути от корня репозитория).
+
+Спецификацию **не меняйте**. Если в ней пробел или противоречие — запишите в `runs/{run}/{X}/spec-issues.md` и примите разумное решение, отметив его. Программа не должна падать с трейсбеком ни на каком вводе.
+"""
+
+[roles.expert]
+ru = "эксперт"
+description = "знает спецификацию; решает, соответствует ли ей поведение программы, и решает спорные места; принимает работу. Не пишет код."
+
+[roles.executor]
+ru = "исполнитель"
+description = "пишет код и тесты; запускает тесты."
+
+[roles.tester]
+ru = "тестировщик"
+skill = ".claude/skills/tester/SKILL.md"
+description = "считает, на сколько случаев программа не отвечает так, как требует спецификация."
+
+[roles.producer]
+ru = "продюсер"
+ru_gen = "продюсера"
+ru_dat = "продюсеру"
+system = true
+skill = ".claude/skills/producer/SKILL.md"
+
+[roles.choreographer]
+ru = "хореограф"
+ru_gen = "хореографа"
+ru_dat = "хореографу"
+system = true
+skill = ".claude/skills/choreographer/SKILL.md"
+
+[[ensembles]]
+name = "A"
+roles = ["expert", "executor", "tester", "producer", "choreographer"]
+repeats = 3
+
+[[ensembles]]
+name = "B"
+roles = ["expert", "executor", "tester"]
+repeats = 3

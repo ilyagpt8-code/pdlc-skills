@@ -345,3 +345,45 @@ def test_subagents_folded_and_never_wait(tmp_path):
     ])
     assert not a["waits"]
     assert "a_sub" in a["roles"] and not any("_sub_" in r for r in a["roles"])
+
+
+def seg(n, v, was, tok):
+    w = f" (было {was})" if was is not None else ""
+    return f"отрезок {n}: метрика м={v}{w} [источник: t{n}], токены за отрезок={tok}, всего=0"
+
+
+def test_wall_by_progress_price(tmp_path, capsys):
+    p = journal(tmp_path, "\n".join([
+        seg(1, 100, None, 0), seg(2, 80, 100, 10000), seg(3, 60, 80, 10000),
+        seg(4, 60, 60, 20000), seg(5, 59, 60, 20000)]))
+    out = run_p(capsys, p)
+    assert "СТЕНА" in out and "стена: потрачено 40000 токенов" in out and "в 4.0 раза" in out
+    assert "спроси владельца" in out
+    # порог выше - стены нет, остаётся плато
+    out2 = run_p(capsys, p, "--wall-factor", 5)
+    assert "СТЕНА" not in out2 and "плато" in out2
+    one = journal(tmp_path, "\n".join([seg(1, 100, None, 0), seg(2, 80, 100, 10000), seg(3, 60, 80, 10000),
+                                      seg(4, 59, 60, 90000)]))
+    assert "СТЕНА" not in run_p(capsys, one)       # один дорогой отрезок - не стена
+
+
+def test_wall_without_history_and_not_on_progress(tmp_path, capsys):
+    p = journal(tmp_path, "\n".join([seg(1, 100, None, 0), seg(2, 100, 100, 200000), seg(3, 100, 100, 150000)]))
+    out = run_p(capsys, p)
+    assert "истории прогресса нет" in out and "стена: потрачено 350000" in out
+    assert "СТЕНА" not in run_p(capsys, p, "--wall-tokens", 400000)
+    assert "СТЕНА" not in run_p(capsys, journal(tmp_path, seg(1, 100, None, 0) + "\n" + seg(2, 100, 100, 900000)))
+    ok = journal(tmp_path, "\n".join([seg(1, 100, None, 0), seg(2, 80, 100, 10000), seg(3, 60, 80, 500000)]))
+    assert "СТЕНА" not in run_p(capsys, ok)       # дорогой, но шаг с прогрессом
+
+
+def test_wall_lists_all_metrics_and_beats_plateau(tmp_path, capsys):
+    lines = ["отрезок 1: метрика a.x=100 [источник: t1], токены за отрезок=0, всего=0",
+             "отрезок 2: метрика a.x=100 (было 100) [источник: t2], токены за отрезок=200000, всего=0",
+             "отрезок 3: метрика a.x=100 (было 100) [источник: t3], токены за отрезок=200000, всего=0",
+             "отрезок 4: метрика b.y=50 [источник: t4], токены за отрезок=0, всего=0"]
+    out = run_p(capsys, journal(tmp_path, "\n".join(lines)))
+    assert "СТЕНА по метрикам: a.x (400000 ток.) [закрыта]" in out
+    p = journal(tmp_path, "\n".join(lines[:3]))
+    out = run_p(capsys, p)
+    assert out.strip().splitlines()[-1].startswith("вывод: стена")
