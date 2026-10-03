@@ -5,6 +5,7 @@ Converts temperature values between Celsius (C), Fahrenheit (F), and Kelvin (K)
 """
 
 import sys
+import math
 
 
 def format_output(value: float) -> str:
@@ -113,6 +114,11 @@ def main():
     try:
         value = float(value_str)
     except ValueError:
+        print("Error: invalid temperature value", file=sys.stderr)
+        sys.exit(1)
+
+    # Check for special float values (inf, -inf, nan)
+    if not math.isfinite(value):
         print("Error: invalid temperature value", file=sys.stderr)
         sys.exit(1)
 
