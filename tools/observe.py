@@ -60,7 +60,11 @@ def main(argv=None) -> int:
     run([str(TOOLS / "mail_stats.py"), str(out), "--roles", roles, "--max-age-hours", str(a.max_age_hours)],
         out / "mail_stats.md")
     run([str(TOOLS / "progress.py"), str(out / "journal.md"), "--stats", str(out / "stats.md")], out / "progress.md")
-    print(f"снимок готов: {out} (роли: {roles})")
+    sys.path.insert(0, str(TOOLS))
+    from find_sessions import title_of
+    for r, p in pairs:
+        print(f"  {r} = {Path(p).stem[:8]} «{title_of(p) or '(без заголовка)'}»")
+    print(f"снимок готов: {out} (роли: {roles}) — сверь заголовки выше с составом ансамбля")
     return 0
 
 
