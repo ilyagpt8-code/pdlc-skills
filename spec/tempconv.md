@@ -43,8 +43,8 @@ All conversions are performed using these formulas:
 
 On successful conversion, output a single line containing the result as a decimal number:
 
-- **Precision**: The result is printed with **up to 2 decimal places**. Trailing zeros after the decimal point are removed, except trailing zeros after the first decimal place are kept for consistency.
-  - Example outputs: `32` (not `32.00`), `98.6`, `0.5`, `273.15`
+- **Precision**: The result is printed with minimal necessary decimal places (up to 2). All trailing zeros are removed after the decimal point.
+  - Example outputs: `32` (not `32.00`), `98.6` (not `98.60`), `0.5`, `273.15`
 - **No extra text**: Only the number is printed to stdout. No units, labels, or confirmation messages.
 - **Newline**: Output ends with a newline character.
 
@@ -97,12 +97,12 @@ Possible error reasons:
 | `tempconv 0 C Z` | 1 | `Error: Invalid scale 'Z': must be C, F, or K` |
 | `tempconv -1 K C` | 1 | `Error: Temperature in Kelvin cannot be negative: -1K` |
 | `tempconv -300 C K` | 1 | `Error: Conversion results in temperature below absolute zero: -26.85K` |
-| `tempconv 0 C` | 1 | (Missing required argument - implementation-specific error) |
+| `tempconv 0 C` | 1 | (Missing required argument - exit code 1 required; exact message is implementation-specific) |
 
 ## Implementation Notes
 
-1. **Rounding and Precision**: Implementations may use standard floating-point rounding. When displaying results with the specified precision (up to 2 decimal places), round-half-up is acceptable.
-2. **Floating-Point Accuracy**: Due to floating-point arithmetic, results may have minor rounding differences. Implementations should aim for accuracy to at least 2 decimal places for typical temperature ranges.
+1. **Rounding and Precision**: Implementations may use any standard floating-point rounding method (round-half-up, round-half-to-even, etc.). Results must match the provided examples within the 2 decimal place precision.
+2. **Floating-Point Accuracy**: Implementations should aim for accuracy to at least 2 decimal places for all temperature values in the valid range (from absolute zero, 0K and above). For very large numbers, rounding applies at the 2 decimal place precision as specified in the Output Format section.
 3. **Argument Validation**: Validate all three arguments before performing any conversion. Report the first validation error encountered.
 4. **Case Sensitivity**: Scale letters are case-sensitive. `tempconv 0 c f` is invalid; must use capital letters.
 
@@ -135,7 +135,7 @@ Implementations should pass the following test cases:
 15. `tempconv 0 X F` → error (exit 1) — invalid source scale
 16. `tempconv 0 C Z` → error (exit 1) — invalid target scale
 17. `tempconv -1 K C` → error (exit 1) — negative Kelvin input
-18. `tempconv 0 c f` → error (exit 1) — lowercase scales (if case-sensitivity enforced)
+18. `tempconv 0 c f` → error (exit 1) — lowercase scales are not allowed
 
 ## Exit Codes
 
