@@ -24,19 +24,20 @@
 повторы команд (3+ раз): нет
 строки метрик: нет
 
-== producer: 132 записей из 190 строк/событий (пропущено неизвестных: 58) ==
-ходы пользователя (люди/другие агенты): 1; ответов модели: 31
-токены: вывод 1550; вход без кэша 252; вход через кэш: чтение 1749642, запись 41382
-стоимость: $0.23 (оценка по ценам Haiku 4.5)
-инструменты (всего 41, топ-5): Read 14, Bash 11, Glob 6, Write 4, Edit 4
-изменённые файлы: /home/user/pdlc-skills/runs/005/app/journal.md (4), /home/user/pdlc-skills/runs/005/app/mail/002-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/app/producer-summary-move-1.md (1), /home/user/pdlc-skills/runs/005/app/mail/004-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/app/producer-summary-move-2.md (1)
+== producer: 157 записей из 221 строк/событий (пропущено неизвестных: 64) ==
+ходы пользователя (люди/другие агенты): 1; ответов модели: 36
+токены: вывод 1883; вход без кэша 294; вход через кэш: чтение 2127521, запись 47724
+стоимость: $0.28 (оценка по ценам Haiku 4.5)
+инструменты (всего 49, топ-5): Read 18, Bash 12, Glob 6, Write 5, Edit 5
+изменённые файлы: /home/user/pdlc-skills/runs/005/app/journal.md (5), /home/user/pdlc-skills/runs/005/app/mail/002-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/app/producer-summary-move-1.md (1), /home/user/pdlc-skills/runs/005/app/mail/004-producer-to-expert.md (1), /home/user/pdlc-skills/runs/005/app/producer-summary-move-2.md (1), /home/user/pdlc-skills/runs/005/app/producer-review.md (1)
 ошибки инструментов: 3 (напр. producer#19 Read; producer#117 Bash; producer#144 Bash)
-активная работа: 4м 17с (паузы >5 мин не считаются); длиннейшие паузы: 1м 21с перед producer#90, 11с перед producer#109, 10с перед producer#130
-пустые реплики: 0 из 17 (0%)
+активная работа: 7м 35с (паузы >5 мин не считаются); длиннейшие паузы: 2м 42с перед producer#191, 1м 21с перед producer#90, 11с перед producer#109
+пустые реплики: 0 из 20 (0%)
 повторы команд (3+ раз, кандидаты в скрипт):
   6x Glob /home/user/pdlc-skills (producer#26, producer#37, producer#48...)
-  4x Edit /home/user/pdlc-skills/runs/005/app/journal.md (producer#77, producer#132, producer#154...)
-  3x Read /home/user/pdlc-skills/runs/005/app/control.md (producer#35, producer#93, producer#169...)
+  5x Edit /home/user/pdlc-skills/runs/005/app/journal.md (producer#77, producer#132, producer#154...)
+  4x Read /home/user/pdlc-skills/runs/005/app/control.md (producer#35, producer#93, producer#169...)
+  3x Read /home/user/pdlc-skills/runs/005/app/journal.md (producer#39, producer#106, producer#204...)
 строки метрик: нет
 
 == choreographer: 107 записей из 154 строк/событий (пропущено неизвестных: 47) ==
@@ -53,4 +54,4 @@
   3x Read /home/user/pdlc-skills/runs/005/app/journal.md (choreographer#40, choreographer#125, choreographer#141...)
 строки метрик: нет
 
-ИТОГО стоимость ансамбля: $0.78
+ИТОГО стоимость ансамбля: $0.83
