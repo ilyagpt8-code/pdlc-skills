@@ -30,6 +30,7 @@ import session_stats as S  # noqa: E402
 
 MERGE_SEC = 120
 BLOCK_RE = re.compile(r"<cross-session-message\b([^>]*)>(.*?)</cross-session-message>", re.S)
+ID_RE = re.compile(r"^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 ATTR_RE = re.compile(r'([\w-]+)\s*=\s*"([^"]*)"')
 SEND_TOOLS = {"SendMessage": "to", "mcp__ccd_session_mgmt__send_message": "session_id"}
 OTHER = "other"
@@ -102,7 +103,7 @@ def learn_aliases(recs_by_role, titles):
                 at = dict(ATTR_RE.findall(m.group(1)))
                 role = by_title.get(_norm(at.get("from-name") or at.get("name") or "").lower())
                 fid = _sid(at.get("from-session") or at.get("from"))
-                if role and fid:
+                if role and ID_RE.match(fid):
                     al[fid] = role
     return al
 
@@ -117,6 +118,8 @@ def extract(role, recs, resolve, since=None, until=None):
         if r["kind"] == "user" and "cross-session-message" in r["text"]:
             for m in BLOCK_RE.finditer(r["text"]):
                 at = dict(ATTR_RE.findall(m.group(1)))
+                if not ID_RE.match(at.get("from-session") or at.get("from") or ""):
+                    continue            # тег процитирован в обычном тексте, не письмо
                 frm = resolve(at.get("from-session"), at.get("from"), at.get("from-name"), at.get("name"))
                 out.append({"ts": ts, "frm": frm, "to": role, "text": m.group(2).strip(), "side": "in"})
         elif r["kind"] == "assistant":
