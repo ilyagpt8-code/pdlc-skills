@@ -16,3 +16,7 @@
 ## Статус ход 1 (choreographer)
 
 сверка: принимающий=expert принял=нет; результат spec/tempconv.md есть=да; ждут=producer ждёт expert (003-producer-to-expert.md о 5 уточнениях)
+
+## Статус ход 2 (choreographer)
+
+сверка: принимающий=expert принял=нет; результат spec/tempconv.md есть=да; ждут=никто (expert нет новых писем в ход 2 пока, это норма)
