@@ -48,6 +48,8 @@ TOPIC_SIM = 0.05            # меньше - письма отправителя
 ACK_RE = re.compile(r"\b(принял\w*|принято|спасибо|благодарю|работаю|в работе|ок|окей|ok|"
                     r"понял\w*|ясно|жду|готово|приступаю)\b", re.I)
 SHORT = 200
+OWNER = "owner"
+ASK_MARK = "AskUserQuestion"     # claude_mail пишет в первой строке письма-вопроса с вариантами
 WORD_RE = re.compile(r"\w{4,}")
 SUB_RE = re.compile(r"_sub_[0-9a-zA-Z]+$")
 
@@ -228,6 +230,44 @@ def is_sub(r):
     return bool(SUB_RE.search(r))
 
 
+def is_question(text):
+    """Письмо владельцу - вопрос: вызов AskUserQuestion или «?» в последнем абзаце."""
+    t = text.strip()
+    if t.startswith("Вопрос владельцу с вариантами") and ASK_MARK in t.splitlines()[0]:
+        return True
+    paras = [p for p in re.split(r"\n\s*\n", t) if p.strip()]
+    return bool(paras) and bool(SIGNALS[0][1].search(paras[-1]))
+
+
+def _after(a, b):
+    """b после a: по времени, при равном времени или без времени - по порядку (вызывает вызывающий)."""
+    if a.get("ts") is None or b.get("ts") is None:
+        return True
+    return b["ts"] >= a["ts"]
+
+
+def owner_waits(msgs):
+    """Вопросы R -> owner, на которые владелец не ответил (нет позже письма owner -> R),
+    и письма owner -> R без ответа R -> owner до следующего письма владельца этой роли."""
+    q, unanswered = [], []
+    for i, m in enumerate(msgs):
+        if is_sub(m["frm"]) or is_sub(m["to"]):
+            continue
+        if m["to"] == OWNER and m["frm"] != OWNER and is_question(m["text"]):
+            if not any(x["frm"] == OWNER and x["to"] == m["frm"] and _after(m, x) for x in msgs[i + 1:]):
+                q.append(m)
+        elif m["frm"] == OWNER and m["to"] not in (OWNER, "all"):
+            for x in msgs[i + 1:]:
+                if x["frm"] == OWNER and x["to"] == m["to"]:
+                    unanswered.append(m)
+                    break
+                if x["frm"] == m["to"] and x["to"] == OWNER:
+                    break
+            else:
+                unanswered.append(m)
+    return q, unanswered
+
+
 def analyze(msgs, roles_extra=(), last=5, window_h=WINDOW_HOURS):
     roles = sorted({fold(m["frm"]) for m in msgs} | {fold(m["to"]) for m in msgs if m["to"] != "all"}
                    | set(roles_extra))
@@ -243,14 +283,14 @@ def analyze(msgs, roles_extra=(), last=5, window_h=WINDOW_HOURS):
                     st[r]["via_all"] += 1
         else:
             st[t]["to_me"] += 1
-            if f != "owner" and not answered(msgs, i):     # владелец ответа не ждёт
+            if f != "owner" and t != "owner" and not answered(msgs, i):   # владелец ответа не ждёт
                 st[f]["open"].append(m)
     last_ts = max((m["ts"] for m in msgs if m.get("ts")), default=None)
     ens = set(roles_extra)          # явно названные роли; «other…» без этого - внешняя сессия
     cands = []
     for i, m in enumerate(msgs):
         y = m["to"]
-        if m["frm"] == "owner" or is_sub(m["frm"]) or is_sub(y) or y == "all" or y == m["frm"]:
+        if m["frm"] == "owner" or y == "owner" or is_sub(m["frm"]) or is_sub(y) or y == "all" or y == m["frm"]:
             continue                # субагенты отчитываются уведомлением и ответа не ждут
         if y.split("_")[0] == "other" and y not in ens:
             continue                # внешняя сессия - не роль ансамбля
@@ -289,10 +329,11 @@ def analyze(msgs, roles_extra=(), last=5, window_h=WINDOW_HOURS):
         j = i
         while j < len(msgs) and frozenset((fold(msgs[j]["frm"]), fold(msgs[j]["to"]))) == pair:
             j += 1
-        if len(pair) == 2 and j - i >= 3:
+        if len(pair) == 2 and j - i >= 3 and "owner" not in pair:     # чат с владельцем - не круг
             loops.append((sorted(pair), msgs[i]["name"], msgs[j - 1]["name"]))
         i = max(j, i + 1)
-    return {"roles": roles, "st": st, "matrix": matrix, "waits": waits,
+    oq, ounans = owner_waits(msgs)
+    return {"owner_q": oq, "owner_unanswered": ounans, "roles": roles, "st": st, "matrix": matrix, "waits": waits,
             "never": never, "quiet": quiet, "empty": empty, "loops": loops, "last": last,
             "wait_items": wait_items, "window_h": window_h, "repeats": repeats, "last_ts": last_ts}
 
@@ -362,6 +403,16 @@ def render(a, total, max_age_h=None, top=TOP) -> str:
             gap = f", через {_age(x['gap'])}" if x["gap"] is not None else ""
             tag = "ответ между ними был" if x["replied"] else "повтор без ответа"
             L.append(f"  {x['frm']} -> {x['to']}: {x['name']} повторяет {x['orig']}{gap} ({tag})")
+    oq = a["owner_q"]
+    if oq:
+        old = oq[0]
+        age = f", возраст {_age((a['last_ts'] - old['ts']).total_seconds())}" if a["last_ts"] and old.get("ts") else ""
+        L.append(f"вопросы к владельцу без ответа: {len(oq)} (самый старый — {old['name']}{age}: "
+                 f"{old['frm']} «{first_line(old['text'].split(chr(10), 1)[-1] if old['text'].startswith('Вопрос владельцу с вариантами') else old['text'])}»)")
+    else:
+        L.append("вопросы к владельцу без ответа: 0")
+    L.append(f"письма владельца без ответа роли в чате: {len(a['owner_unanswered'])}"
+             + (f" (последнее — {a['owner_unanswered'][-1]['name']})" if a["owner_unanswered"] else ""))
     L.append("Молчащие: " + (
         "не писали ни разу: " + ", ".join(a["never"]) if a["never"] else "все писали хотя бы раз")
         + (f"; нет писем в последних {a['last']}: " + ", ".join(a["quiet"]) if a["quiet"] else

@@ -16,7 +16,9 @@ from-session / from-name) в тексте пользовательской за�
 Исходящее: вызов SendMessage (to, message) или mcp__ccd_session_mgmt__send_message
 (session_id, message). Реплики владельца в чате сессии (запись user с origin.kind=human; без поля origin - не
 isMeta/isCompactSummary, не результат инструмента, не служебный текст), а также ответ на вопрос
-агента (tool_result вызова AskUserQuestion) - письма owner -> роль.
+агента (tool_result вызова AskUserQuestion) - письма owner -> роль. Обратно: итог хода сессии
+(последний текстовый блок ответа модели между репликами владельца, до 3000 знаков) и вопрос
+AskUserQuestion (tool_use с input.questions) - письма роль -> owner.
 Одно письмо, видимое у отправителя и получателя, склеивается
 по (отправитель, получатель, текст) в пределах 12 ч (доставка может ждать в очереди).
 Адресат - id/uds-канал/local_<uuid>: роль берётся из таблицы «id -> роль», собранной по полям
@@ -59,6 +61,8 @@ ASK_TOOL = "AskUserQuestion"        # ответ владельца на воп�
 ASKED_RE = re.compile(r"^\s*(?:Your questions have been answered|User has answered)[:\s]", re.I)
 ASK_TAIL_RE = re.compile(r"\s*You can now continue with these answers in mind\.?\s*$", re.I)
 REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+REPLY_MAX = 3000                    # ответ сессии владельцу длиннее обрезается
+ASK_HEAD = "Вопрос владельцу с вариантами (AskUserQuestion):"    # mail_stats узнаёт вопрос по этой строке
 
 
 def _sid(v) -> str:
@@ -232,6 +236,66 @@ def owner_text(r, strict):
     return text
 
 
+def ask_text(inp):
+    """Текст вопросов AskUserQuestion (input.questions) или None."""
+    qs = inp.get("questions") if isinstance(inp, dict) else None
+    if not isinstance(qs, list):
+        return None
+    lines = []
+    for q in qs:
+        if not isinstance(q, dict) or not str(q.get("question") or "").strip():
+            continue
+        opts = [str(o.get("label") if isinstance(o, dict) else o) for o in (q.get("options") or [])
+                if (o.get("label") if isinstance(o, dict) else o)]
+        lines.append(_norm(str(q["question"])) + (f" (варианты: {'; '.join(opts)})" if opts else ""))
+    return ASK_HEAD + "\n" + "\n".join(lines) if lines else None
+
+
+def _clip_reply(t):
+    t = t.strip()
+    return t if len(t) <= REPLY_MAX else t[:REPLY_MAX - 1].rstrip() + "…"
+
+
+def owner_replies(role, recs, strict, since=None, until=None):
+    """Письма роль -> owner: ответ сессии владельцу в чате. Ход - от реплики владельца (или ответа
+    на AskUserQuestion) до следующей такой реплики; письмо - последний текстовый блок ответа модели
+    в ходе (итог), со временем этой записи; ход только из инструментов письма не даёт. Вызов
+    AskUserQuestion с input.questions - отдельное письмо с текстом вопросов."""
+    ask_ids = {_id for r in recs if r["kind"] == "assistant" for _id, name, _i in r["tools"] if name == ASK_TOOL}
+    out, last, seen_ask = [], None, set()
+
+    def flush():
+        if last is not None:
+            ts, text = last
+            if not ((since and ts < since) or (until and ts > until)):
+                out.append({"ts": ts, "frm": role, "to": OWNER, "text": _clip_reply(text),
+                            "side": "out", "src": "reply"})
+
+    in_turn = False
+    for r in recs:
+        if r["kind"] == "user":
+            asked = any(tid in ask_ids and not err and ASKED_RE.match(txt or "")
+                        for tid, err, txt in r.get("results", ()))
+            if asked or owner_text(r, strict):
+                if in_turn:
+                    flush()
+                in_turn, last = True, None
+        elif r["kind"] == "assistant" and r["ts"] is not None:
+            for _id, name, inp in r["tools"]:
+                if name == ASK_TOOL and (not _id or _id not in seen_ask):
+                    txt = ask_text(inp)
+                    if txt:
+                        seen_ask.add(_id)
+                        if not ((since and r["ts"] < since) or (until and r["ts"] > until)):
+                            out.append({"ts": r["ts"], "frm": role, "to": OWNER, "text": _clip_reply(txt),
+                                        "side": "out", "src": "reply"})
+            if in_turn and r["text"].strip() and r.get("model") != "<synthetic>":
+                last = (r["ts"], r["text"])
+    if in_turn:
+        flush()
+    return out
+
+
 def extract(role, recs, resolve, since=None, until=None):
     """Письма одной сессии: список dict(ts, frm, to, text, side, src)."""
     out = []
@@ -293,7 +357,7 @@ def extract(role, recs, resolve, since=None, until=None):
                 if to == OTHER and raw_to and not ID_RE.match(raw_to) and not AGENT_ID_RE.match(raw_to):
                     to = f"{OTHER}:{raw_to}"        # внешняя сессия, названная заголовком
                 out.append({"ts": ts, "frm": role, "to": to, "text": msg.strip(), "side": "out", "src": "out"})
-    return out
+    return out + owner_replies(role, recs, strict, since, until)
 
 
 def _same(a: str, b: str) -> bool:

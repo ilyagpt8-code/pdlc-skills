@@ -387,3 +387,42 @@ def test_owner_answer_to_ask_user_question(tmp_path):
     files = _owner(tmp_path, [ask, ans, other])
     assert len(files) == 1 and "Уровнем" in files[0].read_text(encoding="utf-8")
     assert "continue with these" not in files[0].read_text(encoding="utf-8")
+
+
+def T(ts, text, mid):
+    return A(ts, [{"type": "text", "text": text}], mid)
+
+
+def test_reply_to_owner_is_last_text_of_turn(tmp_path):
+    files = _owner(tmp_path, [
+        H("2026-01-01T10:00:00Z", "вопрос один"),
+        A("2026-01-01T10:00:10Z", [{"type": "thinking", "thinking": "думаю"}], "m0"),
+        T("2026-01-01T10:00:20Z", "промежуточный текст", "m1"),
+        A("2026-01-01T10:00:30Z", [{"type": "tool_use", "id": "x1", "name": "Bash", "input": {}}], "m2"),
+        T("2026-01-01T10:00:40Z", "итог ответа", "m3"),
+        H("2026-01-01T10:05:00Z", "вопрос два"),
+        A("2026-01-01T10:05:10Z", [{"type": "tool_use", "id": "x2", "name": "Bash", "input": {}}], "m4"),
+        H("2026-01-01T10:06:00Z", "вопрос три"),
+        T("2026-01-01T10:06:30Z", "x" * 3500, "m5"),
+    ])
+    n = [f.name for f in files]
+    assert [x.split("-", 1)[1] for x in n] == ["owner-to-arch.md", "arch-to-owner.md", "owner-to-arch.md",
+                                               "owner-to-arch.md", "arch-to-owner.md"], n
+    r1 = files[1].read_text(encoding="utf-8")
+    assert r1.startswith("2026-01-01T10:00:40Z") and "итог ответа" in r1 and "промежуточный" not in r1
+    assert len(files[4].read_text(encoding="utf-8").split("\n", 2)[2].strip()) <= C.REPLY_MAX
+
+
+def test_reply_before_first_owner_message_is_not_mail(tmp_path):
+    files = _owner(tmp_path, [T("2026-01-01T09:00:00Z", "сам начал", "m0"),
+                              H("2026-01-01T10:00:00Z", "привет")])
+    assert [f.name.split("-", 1)[1] for f in files] == ["owner-to-arch.md"]
+
+
+def test_ask_user_question_is_letter_to_owner(tmp_path):
+    ask = A("2026-01-01T10:01:00Z", [{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": {
+        "questions": [{"question": "Как делать?", "options": [{"label": "А"}, {"label": "Б"}]}]}}], "q")
+    files = _owner(tmp_path, [H("2026-01-01T10:00:00Z", "начнём"), ask])
+    assert [f.name.split("-", 1)[1] for f in files] == ["owner-to-arch.md", "arch-to-owner.md"]
+    t = files[1].read_text(encoding="utf-8")
+    assert "AskUserQuestion" in t and "Как делать?" in t and "А; Б" in t

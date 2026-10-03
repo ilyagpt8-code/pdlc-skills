@@ -5,7 +5,7 @@
 
 Без подстрок — все сессии с активностью за последние --days дней. Печатает:
 префикс id (8 знаков — его и пишут в файл ролей), заголовок, последнюю активность,
-размер журнала и папку проекта. Заголовок берётся из записей custom-title (имя,
+размер журнала и рабочую папку сессии (туда кладут скиллы). Заголовок берётся из записей custom-title (имя,
 которое дал владелец) или ai-title (сгенерированное).
 """
 from __future__ import annotations
@@ -18,6 +18,18 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+
+def cwd_of(path: str) -> str:
+    """Рабочая папка сессии — поле cwd первой записи, где оно есть."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if '"cwd"' in line:
+                try:
+                    return json.loads(line).get("cwd", "")
+                except ValueError:
+                    continue
+    return ""
 
 
 def title_of(path: str) -> str:
@@ -55,7 +67,7 @@ def main(argv=None) -> int:
         t = title_of(p)
         if a.needles and not any(n.lower() in t.lower() for n in a.needles):
             continue
-        rows.append((mtime, Path(p).stem[:8], t or "(без заголовка)", os.path.getsize(p), Path(p).parent.name))
+        rows.append((mtime, Path(p).stem[:8], t or "(без заголовка)", os.path.getsize(p), cwd_of(p) or Path(p).parent.name))
     rows.sort(reverse=True)
     if not rows:
         print("ничего не найдено" + (" по заголовку" if a.needles else ""))

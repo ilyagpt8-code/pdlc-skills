@@ -363,3 +363,27 @@ def test_wall_lists_all_metrics_and_beats_plateau(tmp_path, capsys):
     p = journal(tmp_path, "\n".join(lines[:3]))
     out = run_p(capsys, p)
     assert out.strip().splitlines()[-1].startswith("вывод: стена")
+
+
+def test_owner_reply_closes_and_owner_questions_wait(tmp_path):
+    ask = "Вопрос владельцу с вариантами (AskUserQuestion):\nКак делать?"
+    msgs = [
+        ("owner", "arch", "сделай X"),
+        ("arch", "owner", "Сделал X. Что дальше?"),
+        ("owner", "dev", "сделай Y"),
+        ("arch", "owner", ask),
+        ("arch", "owner", "Всё готово."),
+    ]
+    p = tmp_path / "mail"
+    p.mkdir()
+    for i, (f, t, x) in enumerate(msgs, 1):
+        (p / f"{i:03d}-{f}-to-{t}.md").write_text(f"2026-01-01T10:{i:02d}:00Z\n\n{x}\n", encoding="utf-8")
+    a = M.analyze(M.load(tmp_path))
+    assert [m["name"] for m in a["owner_q"]] == ["002-arch-to-owner.md", "004-arch-to-owner.md"]
+    assert [m["name"] for m in a["owner_unanswered"]] == ["003-owner-to-dev.md"]
+    assert not any(r["open"] for r in a["st"].values())          # ответы владельцу - не «без ответа»
+    out = M.render(a, 5)
+    assert "вопросы к владельцу без ответа: 2 (самый старый — 002-arch-to-owner.md" in out
+    # ответ владельца закрывает вопросы
+    (p / "006-owner-to-arch.md").write_text("2026-01-01T10:06:00Z\n\nда\n", encoding="utf-8")
+    assert "вопросы к владельцу без ответа: 0" in M.render(M.analyze(M.load(tmp_path)), 6)
