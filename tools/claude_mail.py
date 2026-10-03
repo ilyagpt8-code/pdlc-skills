@@ -8,6 +8,7 @@
 Пишет:
   <выход>/mail/NNN-<от>-to-<кому>.md   (первая строка - время; каждое письмо один раз)
   <выход>/journal.md                   (строки «метрика: ...» из ответов агентов)
+  <выход>/journal_times.txt            (те же строки метрик с временем: ISO<TAB>строка)
   <выход>/stats.md                     (session_stats summary по тем же журналам)
 
 Входящее: блок <cross-session-message from=".." name=".."> (также атрибуты
@@ -458,6 +459,9 @@ def build(outdir, pairs, since=None, until=None, anon_words=None):
     (out / "journal.md").write_text(
         "# Журнал ансамбля (метрики из ответов агентов)\n\n" + "".join(f"{x}\n" for _, x in metrics),
         encoding="utf-8")
+    # время строк метрик (для trends.py): <ISO-время><TAB><строка>
+    (out / "journal_times.txt").write_text(
+        "".join(f"{t.strftime('%Y-%m-%dT%H:%M:%SZ')}\t{x}\n" for t, x in metrics), encoding="utf-8")
     (out / "stats.md").write_text(
         "# Сводка по журналам сессий\n\n```\n" + S.render_text(results) + "```\n", encoding="utf-8")
     return len(mails), len(metrics)

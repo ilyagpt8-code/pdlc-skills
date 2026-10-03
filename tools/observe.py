@@ -7,7 +7,8 @@
 ~/.claude/projects/*/). Скрипт находит журналы, строит почту ансамбля
 (claude_mail.py), сводку расхода (session_stats.py, в т. ч. «Кандидаты в
 инструмент»), сводку почты (mail_stats.py) и прогресс по метрикам (progress.py),
-и кладёт всё в выходную папку: mail/, stats.md, mail_stats.md, progress.md.
+и кладёт всё в выходную папку: mail/, stats.md, mail_stats.md, progress.md, trends.md
+(закономерности за дни: trends.py).
 Данные живого ансамбля остаются локально — выходную папку не коммитить.
 """
 from __future__ import annotations
@@ -60,6 +61,7 @@ def main(argv=None) -> int:
     run([str(TOOLS / "mail_stats.py"), str(out), "--roles", roles, "--max-age-hours", str(a.max_age_hours)],
         out / "mail_stats.md")
     run([str(TOOLS / "progress.py"), str(out / "journal.md"), "--stats", str(out / "stats.md")], out / "progress.md")
+    run([str(TOOLS / "trends.py"), str(out), "--roles", roles], out / "trends.md")
     sys.path.insert(0, str(TOOLS))
     from find_sessions import title_of
     for r, p in pairs:
