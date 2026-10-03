@@ -38,34 +38,34 @@
   3x Read /home/user/pdlc-skills/runs/007/A3/control.md (executor#24, executor#108, executor#139...)
 строки метрик: нет
 
-== producer: 151 записей из 210 строк/событий (пропущено неизвестных: 59) ==
-ходы пользователя (люди/другие агенты): 1; ответов модели: 31
-токены: вывод 387; вход без кэша 254; вход через кэш: чтение 1760024, запись 42793
-стоимость: $0.23 (оценка по ценам Haiku 4.5)
-инструменты (всего 46, топ-5): Read 18, Bash 16, Edit 7, SubagentHandback 3, Glob 1
-изменённые файлы: /home/user/pdlc-skills/runs/007/A3/journal.md (5), /home/user/pdlc-skills/runs/007/A3/control.md (2), /home/user/pdlc-skills/runs/007/A3/mail/004-producer-to-tester.md (1)
+== producer: 168 записей из 232 строк/событий (пропущено неизвестных: 64) ==
+ходы пользователя (люди/другие агенты): 1; ответов модели: 35
+токены: вывод 396; вход без кэша 288; вход через кэш: чтение 2066447, запись 48718
+стоимость: $0.27 (оценка по ценам Haiku 4.5)
+инструменты (всего 50, топ-5): Read 19, Bash 16, Edit 8, SubagentHandback 4, Write 2
+изменённые файлы: /home/user/pdlc-skills/runs/007/A3/journal.md (6), /home/user/pdlc-skills/runs/007/A3/control.md (2), /home/user/pdlc-skills/runs/007/A3/mail/004-producer-to-tester.md (1), /home/user/pdlc-skills/runs/007/A3/producer-review.md (1)
 ошибки инструментов: 2 (напр. producer#19 Read; producer#148 Edit)
-активная работа: 7м 35с (паузы >5 мин не считаются); длиннейшие паузы: 3м 13с перед producer#165, 1м 27с перед producer#106, 8с перед producer#187
-пустые реплики: 1 из 25 (4%); напр. producer#182 «Отлично! Метрика пришла! Запускаю progress.py:»
+активная работа: 11м 08с (паузы >5 мин не считаются); длиннейшие паузы: 3м 13с перед producer#165, 2м 47с перед producer#211, 1м 27с перед producer#106
+пустые реплики: 1 из 29 (3%); напр. producer#182 «Отлично! Метрика пришла! Запускаю progress.py:»
 повторы команд (3+ раз, кандидаты в скрипт):
-  5x Edit /home/user/pdlc-skills/runs/007/A3/journal.md (producer#85, producer#91, producer#147...)
+  6x Edit /home/user/pdlc-skills/runs/007/A3/journal.md (producer#85, producer#91, producer#147...)
+  4x Read /home/user/pdlc-skills/runs/007/A3/journal.md (producer#51, producer#153, producer#195...)
   3x Read /home/user/pdlc-skills/runs/007/A3/control.md (producer#35, producer#109, producer#168...)
-  3x Read /home/user/pdlc-skills/runs/007/A3/journal.md (producer#51, producer#153, producer#195...)
 строки метрик: нет
 
-== choreographer: 117 записей из 161 строк/событий (пропущено неизвестных: 44) ==
-ходы пользователя (люди/другие агенты): 1; ответов модели: 25
-токены: вывод 40; вход без кэша 206; вход через кэш: чтение 1380894, запись 39775
-стоимость: $0.19 (оценка по ценам Haiku 4.5)
-инструменты (всего 37, топ-5): Read 20, Bash 10, Edit 3, SubagentHandback 3, Write 1
-изменённые файлы: /home/user/pdlc-skills/runs/007/A3/journal.md (3), /home/user/pdlc-skills/runs/007/A3/mail/005-choreographer-to-tester.md (1)
+== choreographer: 129 записей из 176 строк/событий (пропущено неизвестных: 47) ==
+ходы пользователя (люди/другие агенты): 1; ответов модели: 28
+токены: вывод 410; вход без кэша 232; вход через кэш: чтение 1602633, запись 49072
+стоимость: $0.22 (оценка по ценам Haiku 4.5)
+инструменты (всего 40, топ-5): Read 21, Bash 10, SubagentHandback 4, Edit 3, Write 2
+изменённые файлы: /home/user/pdlc-skills/runs/007/A3/journal.md (3), /home/user/pdlc-skills/runs/007/A3/mail/005-choreographer-to-tester.md (1), /home/user/pdlc-skills/runs/007/A3/choreographer-review.md (1)
 ошибки инструментов: 1 (напр. choreographer#19 Read)
-активная работа: 7м 05с (паузы >5 мин не считаются); длиннейшие паузы: 3м 29с перед choreographer#123, 1м 04с перед choreographer#89, 12с перед choreographer#81
-пустые реплики: 0 из 15 (0%)
+активная работа: 10м 44с (паузы >5 мин не считаются); длиннейшие паузы: 3м 29с перед choreographer#123, 2м 50с перед choreographer#162, 1м 04с перед choreographer#89
+пустые реплики: 0 из 17 (0%)
 повторы команд (3+ раз, кандидаты в скрипт):
-  5x Read /home/user/pdlc-skills/runs/007/A3/journal.md (choreographer#32, choreographer#95, choreographer#111...)
+  6x Read /home/user/pdlc-skills/runs/007/A3/journal.md (choreographer#32, choreographer#95, choreographer#111...)
   3x Read /home/user/pdlc-skills/runs/007/A3/control.md (choreographer#30, choreographer#92, choreographer#126...)
   3x Edit /home/user/pdlc-skills/runs/007/A3/journal.md (choreographer#81, choreographer#116, choreographer#155...)
 строки метрик: нет
 
-ИТОГО стоимость ансамбля: $1.06
+ИТОГО стоимость ансамбля: $1.13
