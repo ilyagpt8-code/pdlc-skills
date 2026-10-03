@@ -26,19 +26,19 @@
   3x Glob /home/user/pdlc-skills/runs/006/A1/mail/*.md (executor#25, executor#52, executor#89...)
 строки метрик: нет
 
-== producer: 109 записей из 151 строк/событий (пропущено неизвестных: 42) ==
-ходы пользователя (люди/другие агенты): 1; ответов модели: 25
-токены: вывод 462; вход без кэша 206; вход через кэш: чтение 1298103, запись 33114
-стоимость: $0.17 (оценка по ценам Haiku 4.5)
-инструменты (всего 35, топ-5): Read 18, Glob 5, Edit 5, SubagentHandback 3, Bash 2
-изменённые файлы: /home/user/pdlc-skills/runs/006/A1/journal.md (5), /home/user/pdlc-skills/runs/006/A1/mail/003-producer-to-expert.md (1), /home/user/pdlc-skills/runs/006/A1/mail/007-producer-to-expert.md (1)
+== producer: 132 записей из 180 строк/событий (пропущено неизвестных: 48) ==
+ходы пользователя (люди/другие агенты): 1; ответов модели: 30
+токены: вывод 468; вход без кэша 248; вход через кэш: чтение 1632863, запись 39528
+стоимость: $0.22 (оценка по ценам Haiku 4.5)
+инструменты (всего 43, топ-5): Read 22, Glob 7, Edit 6, SubagentHandback 4, Bash 2
+изменённые файлы: /home/user/pdlc-skills/runs/006/A1/journal.md (6), /home/user/pdlc-skills/runs/006/A1/mail/003-producer-to-expert.md (1), /home/user/pdlc-skills/runs/006/A1/mail/007-producer-to-expert.md (1)
 ошибки инструментов: 4 (напр. producer#19 Read; producer#66 Read; producer#99 Edit)
-активная работа: 6м 08с (паузы >5 мин не считаются); длиннейшие паузы: 2м 46с перед producer#110, 1м 31с перед producer#84, 13с перед producer#63
-пустые реплики: 0 из 11 (0%)
+активная работа: 7м 57с (паузы >5 мин не считаются); длиннейшие паузы: 2м 46с перед producer#110, 1м 31с перед producer#84, 1м 28с перед producer#152
+пустые реплики: 0 из 12 (0%)
 повторы команд (3+ раз, кандидаты в скрипт):
-  5x Edit /home/user/pdlc-skills/runs/006/A1/journal.md (producer#75, producer#98, producer#103...)
-  3x Read /home/user/pdlc-skills/runs/006/A1/control.md (producer#39, producer#87, producer#112...)
-  3x Read /home/user/pdlc-skills/runs/006/A1/journal.md (producer#41, producer#93, producer#141...)
+  6x Edit /home/user/pdlc-skills/runs/006/A1/journal.md (producer#75, producer#98, producer#103...)
+  5x Read /home/user/pdlc-skills/runs/006/A1/journal.md (producer#41, producer#93, producer#141...)
+  4x Read /home/user/pdlc-skills/runs/006/A1/control.md (producer#39, producer#87, producer#112...)
   3x Glob runs/006/A1/mail/* (producer#43, producer#89, producer#114...)
 строки метрик: 1 (ряд: ссылка, накопленный вывод токенов, строка)
   producer#81 [149 ток.] метрика: неясностей_в_спеке=N [источник: проверка эксперта, раунд 1]
@@ -59,4 +59,4 @@
   3x Edit /home/user/pdlc-skills/runs/006/A1/journal.md (choreographer#73, choreographer#114, choreographer#168...)
 строки метрик: нет
 
-ИТОГО стоимость ансамбля: $0.68
+ИТОГО стоимость ансамбля: $0.73
