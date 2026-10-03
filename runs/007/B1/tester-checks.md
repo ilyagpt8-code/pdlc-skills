@@ -1,7 +1,8 @@
-# Tester Checks for tempconv - Version 1
+# Tester Checks for tempconv - Version 2
 
-**Total cases**: 32  
-**Created**: 2026-10-03
+**Total cases**: 37  
+**Created**: 2026-10-03  
+**Updated**: 2026-10-03 (Round 2 - corrections to test expectations)
 
 ## Test Cases
 
@@ -15,8 +16,8 @@
 | 5 | `32 F C` | `0.0` | 0 | Basic F→C, integer input → 1 decimal |
 | 6 | `32.0 F C` | `0.0` | 0 | F→C with 1 decimal input |
 | 7 | `32.50 F C` | `0.28` | 0 | F→C with 2 decimal input, shows precision preservation |
-| 8 | `273.15 K C` | `0.0` | 0 | K→C boundary |
-| 9 | `0 K F` | `-459.67` | 0 | K→F |
+| 8 | `273.15 K C` | `0.00` | 0 | K→C boundary (2 decimals in input) |
+| 9 | `0 K F` | `-459.7` | 0 | K→F (integer input → 1 decimal rounding) |
 | 10 | `68.5 F K` | `293.4` | 0 | F→K |
 
 ### Decimal Precision Preservation
@@ -31,9 +32,9 @@
 ### Rounding Tests (Round Half Away from Zero)
 | # | Input | Expected Output | Exit | Notes |
 |---|-------|-----------------|------|-------|
-| 16 | `-0.25 C F` | `-0.5` | 0 | Negative number, 0.5 output |
+| 16 | `-0.25 C F` | `31.55` | 0 | Negative input, proper conversion |
 | 17 | `0.5 C K` | `273.7` | 0 | Half rounding away from zero |
-| 18 | `-2.5 C F` | `-36.5` | 0 | Negative half rounding |
+| 18 | `-2.5 C F` | `27.5` | 0 | Negative input conversion |
 
 ### Absolute Zero Validation
 | # | Input | Expected Output | Exit | Notes |
@@ -42,7 +43,7 @@
 | 20 | `-273.16 C F` | Error | 3 | Below absolute zero for C |
 | 21 | `-459.67 F C` | `-273.15` | 0 | Exactly at absolute zero for F (should work) |
 | 22 | `-459.68 F C` | Error | 3 | Below absolute zero for F |
-| 23 | `0 K C` | `-273.15` | 0 | Exactly at absolute zero for K (should work) |
+| 23 | `0 K C` | `-273.2` | 0 | Exactly at absolute zero for K (integer input → 1 decimal rounding) |
 | 24 | `-1 K C` | Error | 3 | Below absolute zero for K (negative Kelvin) |
 
 ### Case Insensitivity
@@ -50,7 +51,7 @@
 |---|-------|-----------------|------|-------|
 | 25 | `0 c f` | `32.0` | 0 | Lowercase scales |
 | 26 | `0 C f` | `32.0` | 0 | Mixed case scales |
-| 27 | `0 k c` | `-273.15` | 0 | Lowercase K |
+| 27 | `0 k c` | `-273.2` | 0 | Lowercase K (integer input → 1 decimal rounding) |
 
 ### Invalid Argument Count
 | # | Input | Expected Output | Exit | Notes |
@@ -76,5 +77,5 @@
 | # | Input | Expected Output | Exit | Notes |
 |---|-------|-----------------|------|-------|
 | 36 | `-0 C F` | `32.0` | 0 | Negative zero |
-| 37 | `0.0 K F` | `-459.67` | 0 | Zero Kelvin to Fahrenheit |
+| 37 | `0.0 K F` | `-459.7` | 0 | Zero Kelvin to Fahrenheit (1 decimal rounding) |
 
