@@ -57,6 +57,14 @@ def _norm(t: str) -> str:
     return re.sub(r"\s+", " ", t or "").strip()
 
 
+SUFFIX_RE = re.compile(r"\s*\[[0-9a-z]{4,12}\]\s*$", re.I)     # «Название сессии [e7f7e9]»
+
+
+def _bare(name: str) -> str:
+    """Имя сессии без суффикса «[xxxxxx]» (его добавляет интерфейс), в нижнем регистре."""
+    return SUFFIX_RE.sub("", _norm(name)).lower()
+
+
 def journal_titles(path):
     """Все заголовки сессии из журнала (custom-title, agent-name, ai-title) - в нижнем регистре."""
     out = set()
@@ -97,7 +105,9 @@ def role_resolver(pairs, titles=None, aliases=None):
             if not k:
                 continue
             sk, lk = _sid(k), _norm(str(k)).lower()
-            for table, key in ((by_id, sk), (aliases, sk), (by_name, lk), (by_title, lk)):
+            bk = _bare(str(k))
+            for table, key in ((by_id, sk), (aliases, sk), (by_name, lk), (by_title, lk),
+                               (by_name, bk), (by_title, bk)):      # имя без суффикса «[…]» - та же роль
                 if key in table:
                     v = table[key]
                     if v.startswith(OTHER + ":"):
@@ -135,7 +145,7 @@ def learn_aliases(recs_by_role, titles):
                 name = _norm(at.get("from-name") or at.get("name") or "")
                 if not name:
                     continue
-                role = by_title.get(name.lower()) or f"{OTHER}:{name}"
+                role = by_title.get(name.lower()) or by_title.get(_bare(name)) or f"{OTHER}:{name}"
                 for k in ("from", "from-session"):
                     fid = _sid(at.get(k))
                     if not (fid and ID_RE.match(fid)):
@@ -194,6 +204,8 @@ def extract(role, recs, resolve, since=None, until=None):
     """Письма одной сессии: список dict(ts, frm, to, text, side, src)."""
     out = []
     failed = {tid for r in recs for tid, err, txt in r.get("results", ()) if err or FAILED_RE.search(txt or "")}
+    sent_ids = set()            # один вызов отправки может быть записан в журнале дважды (тот же tool_use id)
+    seen_in = set()             # одна запись входящего, продублированная в журнале (то же время, канал, текст)
     for r in recs:
         ts = r["ts"]
         if ts is None or (since and ts < since) or (until and ts > until):
@@ -203,6 +215,10 @@ def extract(role, recs, resolve, since=None, until=None):
             if "cross-session-message" in r["text"]:
                 for at, body in _blocks(r["text"]):
                     frm = resolve(at.get("from-session"), at.get("from"), at.get("from-name"), at.get("name"))
+                    key = (src, ts, frm, body)
+                    if key in seen_in:
+                        continue
+                    seen_in.add(key)
                     out.append({"ts": ts, "frm": frm, "to": role, "text": body, "side": "in", "src": src})
             if "<task-notification>" in r["text"]:
                 for m in NOTIF_RE.finditer(r["text"]):
@@ -213,6 +229,10 @@ def extract(role, recs, resolve, since=None, until=None):
                     body = re.search(r"<result>(.*?)</result>", m.group(1), re.S) \
                         or re.search(r"<summary>(.*?)</summary>", m.group(1), re.S)
                     if body and body.group(1).strip() and not STUB_RE.search(body.group(1)):
+                        key = (src, ts, frm, body.group(1).strip())
+                        if key in seen_in:
+                            continue
+                        seen_in.add(key)
                         out.append({"ts": ts, "frm": frm, "to": role, "text": body.group(1).strip(),
                                     "side": "in", "src": src})
         elif r["kind"] == "assistant":
@@ -220,6 +240,10 @@ def extract(role, recs, resolve, since=None, until=None):
                 key = SEND_TOOLS.get(name)
                 if not key or _id in failed:       # недоставленное - не письмо
                     continue
+                if _id:
+                    if _id in sent_ids:
+                        continue
+                    sent_ids.add(_id)
                 msg = inp.get("message")
                 if not isinstance(msg, str) or not msg.strip():
                     continue

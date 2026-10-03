@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Сводка по почте ансамбля - для хореографа.
 
-Запуск: python tools/mail_stats.py <папка ансамбля> [--last K] [--roles a,b,c]
+Запуск: python tools/mail_stats.py <папка ансамбля> [--last K] [--roles a,b,c] [--window-hours 6]
+         [--max-age-hours 12] [--top 15]
 Читает <папка>/mail/NNN-<от>-to-<кому>.md (кому = роль или all).
 Только стандартная библиотека.
 """
@@ -10,28 +11,27 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 
 NAME_RE = re.compile(r"^(\d+)-(.+?)-to-(.+)\.md$")
 TS_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?$")
-# признаки ожидания: (название, регэксп). Любой из них у неотвеченного письма = письмо чего-то ждёт.
+# Признаки кандидата (только помечают, ничего не отбрасывают; судит хореограф).
+# «ожидаем…», «не нужно» - не признаки.
 SIGNALS = (
     ("вопрос", re.compile(r"\?(?=\s|$|[)»\"'])")),
-    ("прошу", re.compile(r"\bпрош[уе]\w*|\bпросьб\w*|\bпросит\w*", re.I)),
+    ("прошу", re.compile(r"\bпрош[уе]\w*|\bпросьб\w*|\bпросит\w*|\bпришл\w+|\bпопрос\w+|\bдайте\b|\bпредлага\w+", re.I)),
     # «жду оператора» - ждёт не адресата письма
-    ("жду", re.compile(r"\bжд[уё]\w*(?!\s+(?:(?:слова|ответа|решения|да)\s+)?(?:его\s+)?оператор)|\bожида\w+", re.I)),
-    ("нужно", re.compile(r"\bнужно\b|\bреши\w*|\bответь\w*|\bпроверь\w*", re.I)),
+    ("жду", re.compile(r"\bжд[уё]\b(?!\s+(?:(?:слова|ответа|решения|да)\s+)?(?:его\s+)?оператор)", re.I)),
     # влил/влит - уже сделано; ждёт ветка, готовая к слиянию
     ("на слияние", re.compile(r"на\s+слияни\w+|к\s+слияни\w+|(?:fast-?forward|ff)\s+возможен|на\s+merge", re.I)),
-    ("на ревью", re.compile(r"на\s+ревью|на\s+проверк\w+|на\s+приёмк\w+|на\s+приемк\w+|на\s+review", re.I)),
-    ("готово", re.compile(r"\bготов[оаы]?\b", re.I)),          # учитывается только в начале письма или ГОТОВО
     ("BLOCKED", re.compile(r"\bBLOCKED\b|\bзаблокирован\w*", re.I)),
-    ("повторяю", re.compile(r"\bповторя(?:ю|ем)\b|\bповторно\b|\bповторный\b", re.I)),
 )
-READY_HEAD = 150            # «готово» в первых символах письма = отчёт, ждущий приёмки
-# сильные признаки: достаточно для письма-ответа, у которого нет другого повода ждать
-STRONG = {"прошу", "жду", "на слияние", "на ревью", "BLOCKED", "повторяю", "готово"}
+REPEAT_WORD = re.compile(r"\bповторя(?:ю|ем)\b|\bповторно\b|\bповторный\b", re.I)
+REPORT_START = re.compile(r"^(?:готов\w*|принял\w*|принят\w*|принято|спасибо|благодар\w+|отч[её]т\w*)", re.I)
+WINDOW_HOURS = 6            # окно: ответом считается любое письмо адресата отправителю в этот срок
+TOP = 15
 # письмо-подтверждение/ответ/закрытие: ответа не ждёт. Слова закрытия - в первых CONFIRM_HEAD знаках;
 # слова «ответ…/подтверждаю/согласен» - только в самом начале (после обращения до 70 знаков).
 CONFIRM_HEAD = 150
@@ -82,12 +82,19 @@ def load(folder: Path):
     return out
 
 
+@lru_cache(maxsize=None)
+def _has_letter_word(text):
+    return "письм" in text.lower()
+
+
 def _refers(text, m):
     """Ссылается ли text на письмо m: по имени файла или по явному «письмо NNN».
     Просто трёхзначное число ссылкой не считается."""
     stem = m["name"][:-3]
     if stem in text or m["name"] in text:
         return True
+    if not _has_letter_word(text):
+        return False
     return bool(re.search(rf"письм\w*\s*(?:№|N|#|no\.?)?\s*0*{m['n']}(?!\d)", text, re.I))
 
 
@@ -167,11 +174,20 @@ def signals_of(text):
     return out
 
 
-def is_confirmation(text):
-    """Отчёт-подтверждение / ответ на чужой вопрос / благодарность / извинение / закрытие
-    («принимаю», «влил»): само по себе ответа не ждёт."""
-    head = re.sub(r"^[\s*_>#`\-—«\"'(]+", "", text)
-    return bool(CONFIRM_ANY.search(head[:CONFIRM_HEAD]) or CONFIRM_START.search(head[:CONFIRM_HEAD]))
+def first_line(text, limit=100):
+    """Первая содержательная строка письма (без разметки и одиночного обращения), до limit знаков."""
+    for ln in text.splitlines():
+        ln = re.sub(r"^[\s*_>#`\-—«\"'(]+", "", ln).strip()
+        ln = re.sub(r"[*_`]+", "", ln)
+        if len(ln) < 3 or re.fullmatch(r"[\w .\-]{1,25}[,:!]", ln):      # пусто или «tools,»
+            continue
+        return ln if len(ln) <= limit else ln[:limit - 1].rstrip() + "…"
+    return ""
+
+
+def is_report(text, sig):
+    """Начинается с «готово/принял/спасибо/отчёт» и без вопроса: вероятно, отчёт, ответа не ждёт."""
+    return "вопрос" not in sig and bool(REPORT_START.match(first_line(text, 60)))
 
 
 def find_repeats(msgs):
@@ -183,7 +199,7 @@ def find_repeats(msgs):
     for i, m in enumerate(msgs):
         if is_sub(m["frm"]) or is_sub(m["to"]):
             continue
-        marked = "повторяю" in signals_of(m["text"])
+        marked = bool(REPEAT_WORD.search(m["text"]))
         best, replied = None, False
         for k in range(i - 1, -1, -1):
             p = msgs[k]
@@ -212,7 +228,7 @@ def is_sub(r):
     return bool(SUB_RE.search(r))
 
 
-def analyze(msgs, roles_extra=(), last=5):
+def analyze(msgs, roles_extra=(), last=5, window_h=WINDOW_HOURS):
     roles = sorted({fold(m["frm"]) for m in msgs} | {fold(m["to"]) for m in msgs if m["to"] != "all"}
                    | set(roles_extra))
     st = {r: {"sent": 0, "to_me": 0, "via_all": 0, "open": []} for r in roles}
@@ -230,27 +246,37 @@ def analyze(msgs, roles_extra=(), last=5):
             if not answered(msgs, i):
                 st[f]["open"].append(m)
     last_ts = max((m["ts"] for m in msgs if m.get("ts")), default=None)
-    waits, wait_items, repeats = {}, [], []
-    open_ids = {id(m) for r in roles for m in st[r]["open"]}
-    unanswered = {i for i, m in enumerate(msgs) if id(m) in open_ids}
+    ens = set(roles_extra)          # явно названные роли; «other…» без этого - внешняя сессия
+    cands = []
     for i, m in enumerate(msgs):
-        if i not in unanswered or is_sub(m["frm"]) or is_sub(m["to"]):
+        y = m["to"]
+        if is_sub(m["frm"]) or is_sub(y) or y == "all" or y == m["frm"]:
             continue                # субагенты отчитываются уведомлением и ответа не ждут
+        if y.split("_")[0] == "other" and y not in ens:
+            continue                # внешняя сессия - не роль ансамбля
+        replied = False
+        for x in msgs[i + 1:]:
+            if x["frm"] == y and x["to"] == m["frm"]:
+                if m.get("ts") is None or x.get("ts") is None or 0 <= (x["ts"] - m["ts"]).total_seconds() <= window_h * 3600:
+                    replied = True
+                    break
+            if m.get("ts") is not None and x.get("ts") is not None and (x["ts"] - m["ts"]).total_seconds() > window_h * 3600:
+                break
+        if replied:
+            continue
         sig = signals_of(m["text"])
-        if is_confirmation(m["text"]) or not sig:
-            continue
-        # ответ на чужое письмо (адресат ранее писал отправителю, ответа ещё не было): ждёт,
-        # только если сам явно чего-то просит, а не просто «?» в тексте
-        prev_from_to = any(x["frm"] == m["to"] and x["to"] == m["frm"] and _within(x, m, REPLY_WINDOW)
-                           for x in msgs[:i])
-        if prev_from_to and not (set(sig) & STRONG):
-            continue
         age = (last_ts - m["ts"]).total_seconds() if last_ts and m.get("ts") else None
-        item = {"frm": m["frm"], "to": m["to"], "name": m["name"], "age": age, "signals": sig}
-        wait_items.append(item)
-        waits.setdefault((m["frm"], m["to"]), []).append(m["name"])
+        cands.append({"frm": m["frm"], "to": y, "name": m["name"], "age": age, "signals": sig,
+                      "line": first_line(m["text"]), "report": is_report(m["text"], sig),
+                      "fresh": age is not None and age < window_h * 3600})
+    waits = {}
+    for it in cands:
+        if not it["report"]:
+            waits.setdefault((it["frm"], it["to"]), []).append(it["name"])
+    # с признаками выше, затем старые выше
+    cands.sort(key=lambda x: (not x["signals"], -(x["age"] if x["age"] is not None else -1)))
+    wait_items = cands
     repeats = find_repeats(msgs)
-    wait_items.sort(key=lambda x: -(x["age"] if x["age"] is not None else -1))
     never = [r for r in roles if st[r]["sent"] == 0]
     tail = {fold(m["frm"]) for m in msgs[-last:]}
     quiet = [r for r in roles if st[r]["sent"] > 0 and r not in tail]
@@ -267,7 +293,7 @@ def analyze(msgs, roles_extra=(), last=5):
         i = max(j, i + 1)
     return {"roles": roles, "st": st, "matrix": matrix, "waits": waits,
             "never": never, "quiet": quiet, "empty": empty, "loops": loops, "last": last,
-            "wait_items": wait_items, "repeats": repeats, "last_ts": last_ts}
+            "wait_items": wait_items, "window_h": window_h, "repeats": repeats, "last_ts": last_ts}
 
 
 def _age(sec):
@@ -276,7 +302,7 @@ def _age(sec):
     return f"{h // 24}д {h % 24}ч {mi:02d}м" if h >= 24 else (f"{h}ч {mi:02d}м" if h else f"{mi}м")
 
 
-def render(a, total, max_age_h=None) -> str:
+def render(a, total, max_age_h=None, top=TOP) -> str:
     roles, st = a["roles"], a["st"]
     L = [f"Писем всего: {total}. Роли: {', '.join(roles) or 'нет'}."]
     L.append("")
@@ -290,27 +316,45 @@ def render(a, total, max_age_h=None) -> str:
         L.append(line)
     L.append("")
     items = a["wait_items"]
+    win = a["window_h"]
     hidden = 0
     if max_age_h is not None:
         fresh = [it for it in items if it["age"] is None or it["age"] <= max_age_h * 3600]
         hidden, items = len(items) - len(fresh), fresh
-    if items:
-        # Очередь у узла: кого ждут больше всего (живые ансамбли собираются вокруг одной роли).
+    main_items = [it for it in items if not it["report"]]
+    reports = [it for it in items if it["report"]]
+
+    def line(it):
+        age = f"возраст {_age(it['age'])}" if it["age"] is not None else "возраст ?"
+        if it["fresh"]:
+            age += f", окно {win:g} ч не истекло"
+        sig = ", ".join(it["signals"]) or "нет"
+        return f"  {it['frm']} -> {it['to']}: {it['name']} ({age}; признаки: {sig}) «{it['line']}»"
+
+    if main_items:
+        # Очередь у узла: к кому больше всего писем без ответа (живые ансамбли собираются вокруг одной роли).
         from collections import Counter
-        q = Counter(it["to"] for it in items)
-        top, n = q.most_common(1)[0]
+        q = Counter(it["to"] for it in main_items)
+        top_role, n = q.most_common(1)[0]
         if n >= 2:
-            oldest = max((it["age"] or 0) for it in items if it["to"] == top)
-            L.append(f"Очередь у узла: {top} — ждут {n} писем, самое старое {_age(oldest)}.")
-        L.append("Ждут (письмо с вопросом, просьбой или готовым результатом без ответа; "
-                 "старые сверху; возраст - до последнего письма в почте):")
-        for it in items:
-            age = f"возраст {_age(it['age'])}; " if it["age"] is not None else ""
-            L.append(f"  {it['frm']} ждёт {it['to']}: {it['name']} ({age}признаки: {', '.join(it['signals'])})")
+            oldest = max((it["age"] or 0) for it in main_items if it["to"] == top_role)
+            L.append(f"Очередь у узла: {top_role} — {n} кандидатов, самый старый {_age(oldest)}.")
+        L.append(f"Кандидаты на ожидание (письмо, на которое адресат не написал отправителю ни одного письма "
+                 f"за {win:g} ч или окно ещё идёт; скрипт не решает, ждёт ли письмо ответа, — "
+                 f"открой и реши сам; с признаками выше, затем старые; возраст - до последнего письма в почте):")
+        L.extend(line(it) for it in main_items[:top])
+        if len(main_items) > top:
+            L.append(f"  (ещё {len(main_items) - top} кандидатов не показано)")
     else:
-        L.append("Ждут: никто.")
+        L.append("Кандидаты на ожидание: нет.")
+    if reports:
+        L.append("Вероятно, отчёты (начинаются с «готово/принял/спасибо/отчёт», без вопроса; ответа, скорее всего, "
+                 "не ждут, но проверь, не ждёт ли приёмки):")
+        L.extend(line(it) for it in reports[:top])
+        if len(reports) > top:
+            L.append(f"  (ещё {len(reports) - top} не показано)")
     if hidden:
-        L.append(f"  (ещё {hidden} ожиданий старше {max_age_h} ч скрыто — давние, вероятно, закрыты делом)")
+        L.append(f"  (ещё {hidden} кандидатов старше {max_age_h:g} ч скрыто — давние, вероятно, закрыты делом)")
     if a["repeats"]:
         L.append("Повтор вопроса (то же письмо отправлено снова; «без ответа» - адресат между ними не писал):")
         for x in a["repeats"]:
@@ -334,7 +378,7 @@ def render(a, total, max_age_h=None) -> str:
     att = []
     if a["waits"]:
         pairs = "; ".join(f"{x} ждёт {y}" for (x, y) in sorted(a["waits"])[:3])
-        att.append(f"неотвеченные поручения: {pairs}. Проверь, что адресат письмо увидел.")
+        att.append(f"кандидаты на ожидание: {pairs}. Открой письма и реши, ждут ли ответа.")
     if a["loops"]:
         p, f1, f2 = a["loops"][0]
         att.append(f"возможный круг: {p[0]} и {p[1]} пишут друг другу 3+ раза подряд ({f1} .. {f2}). "
@@ -355,14 +399,17 @@ def main(argv=None) -> int:
     ap.add_argument("--last", type=int, default=5, help="K: окно «последние сообщения»")
     ap.add_argument("--roles", default="", help="все роли через запятую (чтобы найти ни разу не писавших)")
     ap.add_argument("--max-age-hours", type=float, default=None,
-                    help="показывать в «Ждут» только письма моложе N часов (живые долгие ансамбли)")
+                    help="показывать кандидатов только моложе N часов (живые долгие ансамбли)")
+    ap.add_argument("--window-hours", type=float, default=WINDOW_HOURS,
+                    help="окно ответа: адресат не написал отправителю за N часов -> кандидат (по умолчанию 6)")
+    ap.add_argument("--top", type=int, default=TOP, help="сколько кандидатов показывать (остальные - числом)")
     a = ap.parse_args(argv)
     msgs = load(Path(a.folder))
     if not msgs:
         print("Писем нет: папка mail пуста или не найдена.")
         return 0
     extra = [x.strip() for x in a.roles.split(",") if x.strip()]
-    print(render(analyze(msgs, extra, a.last), len(msgs), max_age_h=a.max_age_hours), end="")
+    print(render(analyze(msgs, extra, a.last, a.window_hours), len(msgs), max_age_h=a.max_age_hours, top=a.top), end="")
     return 0
 
 

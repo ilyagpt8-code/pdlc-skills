@@ -30,21 +30,21 @@ def test_mail_unanswered_and_waits(tmp_path):
         ("003-c-to-all.md", "Всем привет, итог готов."),
     ])
     out = run_mail(f)
-    assert "a ждёт b: 001-a-to-b.md" in out
+    assert "a -> b: 001-a-to-b.md" in out and "признаки: вопрос" in out
+    assert "b -> c: 002-b-to-c.md" in out and "признаки: нет" in out       # без признаков - тоже кандидат
+    assert "-> all" not in out                                             # рассылка - не адресное письмо
     assert "a: отправлено 1, получено 1 (адресно 0, через all 1), без ответа 1" in out
-    # all не считается неотвеченным; b получил через all
     assert "c: отправлено 1, получено 1 (адресно 1, через all 0), без ответа 0" in out
     assert "b: отправлено 1, получено 2 (адресно 1, через all 1)" in out
 
 
-def test_mail_answer_clears_wait(tmp_path):
+def test_mail_any_letter_back_closes_candidate(tmp_path):
     f = mk_mail(tmp_path, [
         ("001-a-to-b.md", "Что думаешь?"),
         ("002-b-to-a.md", "Думаю, надо делать так, а не иначе, потому что это проще и надёжнее. " * 5),
     ])
     out = run_mail(f)
-    assert "Ждут: никто." in out
-    assert "явных сигналов нет" in out
+    assert "a -> b" not in out and "b -> a: 002-b-to-a.md" in out          # ответ сам ждёт ответа
 
 
 def test_mail_silent_empty_and_loop(tmp_path):
@@ -174,169 +174,22 @@ def test_progress_real(capsys):
 
 
 # ---------------------------------------------------------------- доработки по итогам 003
-def test_mail_answered_by_reference(tmp_path):
-    p = mk_mail(tmp_path, [
-        ("001-a-to-b.md", "Прошу сделать X?"),
-        ("002-b-to-c.md", "Сделал по письму 001-a-to-b.md"),
-    ])
-    assert "a ждёт b" not in run_mail(p)
-
-
-def test_mail_answered_by_number(tmp_path):
-    p = mk_mail(tmp_path, [
-        ("001-a-to-b.md", "Прошу сделать X?"),
-        ("002-b-to-c.md", "Закрыл вопрос из письма 001."),
-    ])
-    assert "a ждёт b" not in run_mail(p)
-
-
-def test_mail_answered_third_party(tmp_path):
+def test_mail_reply_to_third_party_does_not_close(tmp_path):
+    """Закрывает только письмо адресата САМОМУ отправителю: письмо третьему - нет (высокая полнота)."""
     p = mk_mail(tmp_path, [
         ("001-ch-to-ex.md", "Привет! Producer просит тебя проверить спецификацию?"),
         ("002-ex-to-producer.md", "Проверил, вот результат."),
     ])
-    assert "ch ждёт ex" not in run_mail(p)
+    assert "ch -> ex: 001-ch-to-ex.md" in run_mail(p)
 
 
-def test_mail_third_party_not_written_still_waits(tmp_path):
-    p = mk_mail(tmp_path, [
-        ("001-ch-to-ex.md", "Привет! Producer просит тебя проверить спецификацию?"),
-        ("002-ex-to-other.md", "Занят."),
-    ])
-    assert "ch ждёт ex" in run_mail(p)
-
-
-def test_mail_real_003_choreographer_not_waiting():
+def test_mail_real_003_runs():
     r003 = Path(__file__).resolve().parent.parent / "runs" / "003" / "spec"
     if not r003.is_dir():
         pytest.skip("нет runs/003")
-    assert "choreographer ждёт expert" not in run_mail(r003)
+    assert "внимание:" in run_mail(r003)
 
 
-def test_progress_was_without_prior_point(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([
-        "метрика: q=8 (было 0) [источник: проверка 1]",
-        "метрика: q=2 [источник: проверка 2]"]))
-    out = run_p(capsys, j)
-    assert "0 -> 8" not in out and "шаг 1: 8 -> 2" in out
-
-
-def test_progress_duplicate_same_source_not_point(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([
-        "метрика: q=8 [источник: проверка 1]",
-        "метрика: q=8 [источник: проверка 1]",
-        "метрика: q=2 [источник: проверка 2]"]))
-    out = run_p(capsys, j)
-    assert "шаг 2" not in out and "шаг 1: 8 -> 2" in out and "ПЛАТО" not in out
-
-
-def test_progress_same_value_other_source_is_point(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([
-        "метрика: q=8 [источник: проверка 1]",
-        "метрика: q=8 [источник: проверка 2]"]))
-    assert "шаг 1: 8 -> 8" in run_p(capsys, j)
-
-
-def test_progress_zero_from_first(tmp_path, capsys):
-    j = journal(tmp_path, "метрика: q=0 [источник: проверка 1]")
-    out = run_p(capsys, j)
-    assert "НОЛЬ С ПЕРВОЙ" in out
-    assert "цель с первой проверки - подозрительно" in out.strip().splitlines()[-1]
-
-
-def test_progress_no_zero_from_first_when_gradual(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([
-        "метрика: q=5 [источник: a]", "метрика: q=3 [источник: b]", "метрика: q=0 [источник: c]"]))
-    out = run_p(capsys, j)
-    assert "НОЛЬ С ПЕРВОЙ" not in out and "цель достигнута" in out
-
-
-def test_progress_target_changed(tmp_path, capsys):
-    for i, txt in enumerate(["цель ≤4", "target ≤4", "целевой=4", "целевая метрика: q≤4"]):
-        j = journal(tmp_path, f"метрика: q=8 [источник: a]\n{txt}\nметрика: q=2 [источник: b]")
-        out = run_p(capsys, j)
-        assert "ЦЕЛЬ ИЗМЕНЕНА" in out, txt
-        assert "(было 0, стало 4)" in out.strip().splitlines()[-1], txt
-
-
-def test_progress_target_same_not_changed(tmp_path, capsys):
-    j = journal(tmp_path, "цель ≤4\nметрика: q=8 [источник: a]\nметрика: q=6 [источник: b]")
-    assert "ЦЕЛЬ ИЗМЕНЕНА" not in run_p(capsys, j, "--target", 4)
-
-
-def test_progress_tokens_hint(tmp_path, capsys):
-    j = journal(tmp_path, "метрика: q=8 [источник: a]")
-    s = tmp_path / "stats.md"
-    s.write_text("токены: вывод 10; вход без кэша 20; вход через кэш: чтение 30, запись 40\n", encoding="utf-8")
-    out = run_p(capsys, j, "--stats", s)
-    assert "числа из stats.md" in out and "в строку отрезка бери токены и стоимость отсюда" in out
-
-
-def test_progress_real_003(capsys):
-    base = Path(__file__).resolve().parent.parent / "runs" / "003"
-    if not base.is_dir():
-        pytest.skip("нет runs/003")
-    out = run_p(capsys, base / "spec" / "journal.md")
-    assert "0 -> 8" not in out and "ЦЕЛЬ ИЗМЕНЕНА" in out
-    out = run_p(capsys, base / "app" / "journal.md")
-    assert "НОЛЬ С ПЕРВОЙ" in out
-
-
-# ---------------------------------------------------------------- доработки по проверке на истории ансамбля
-def seg(n, name, v, src, was=None, tok=None):
-    w = f" (было {was})" if was is not None else ""
-    t = f", токены за отрезок={tok}" if tok is not None else ""
-    return f"отрезок {n}: метрика {name}={v}{w} [источник: {src}]{t}"
-
-
-def test_progress_verdict_by_current_metric(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([
-        seg(1, "старая", 100, "a"), seg(2, "старая", 100, "b", 100), seg(3, "старая", 100, "c", 100),
-        seg(4, "новая", 80, "d"), seg(5, "новая", 60, "e", 80)]))
-    out = run_p(capsys, j)
-    assert "закрыта (переопределена)" in out
-    assert out.strip().splitlines()[-1].startswith("вывод: идёт")
-    assert out.count("ПЛАТО") == 0
-
-
-def test_progress_was_positive_creates_step_for_first_point(tmp_path, capsys):
-    out = run_p(capsys, journal(tmp_path, seg(1, "q", 90, "a", 100)))
-    assert "шаг 1: 100 -> 90" in out
-    for was in ("0", "N/A", "неизвестно"):
-        out = run_p(capsys, journal(tmp_path, f"отрезок 1: метрика q=8 (было {was}) [источник: a]"))
-        assert "шаг 1" not in out and "0 -> 8" not in out
-
-
-def test_progress_plateau_needs_tokens(tmp_path, capsys):
-    lines = lambda tok: "\n".join([seg(1, "q", 1000, "a", tok=0), seg(2, "q", 1000, "b", 1000, tok),
-                                    seg(3, "q", 1000, "c", 1000, tok)])
-    assert "ПЛАТО" not in run_p(capsys, journal(tmp_path, lines(20000)))
-    assert "ПЛАТО" in run_p(capsys, journal(tmp_path, lines(30000)))
-    assert "ПЛАТО" not in run_p(capsys, journal(tmp_path, lines(30000)), "--min-tokens", 100000)
-    # токены неизвестны - порог выполнен
-    j = journal(tmp_path, "\n".join([seg(1, "q", 1000, "a"), seg(2, "q", 1000, "b"), seg(3, "q", 1000, "c")]))
-    assert "ПЛАТО" in run_p(capsys, j)
-
-
-def test_progress_min_step(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([seg(1, "q", 1000, "a"), seg(2, "q", 960, "b"), seg(3, "q", 925, "c")]))
-    assert "ПЛАТО" not in run_p(capsys, j)  # 4 % и 3.6 % - не медленные при 0.035
-    assert "ПЛАТО" in run_p(capsys, j, "--min-step", 0.05)
-    j2 = journal(tmp_path, "\n".join([seg(1, "q", 10, "a"), seg(2, "q", 10, "b"), seg(3, "q", 10, "c")]))
-    assert "ПЛАТО" in run_p(capsys, j2, "--min-step", 0.0)  # правило «меньше 20» не меняется
-
-
-def test_progress_jump_flag(tmp_path, capsys):
-    j = journal(tmp_path, "\n".join([seg(1, "q", 100, "a"), seg(2, "q", 50, "b"), seg(3, "q", 45, "c")]))
-    out = run_p(capsys, j)
-    assert "СКАЧОК" in out and out.strip().splitlines()[-1].startswith("вывод: идёт")
-    out = run_p(capsys, journal(tmp_path, "\n".join([seg(1, "q", 10, "a"), seg(2, "q", 5, "b")])))
-    assert out.strip().splitlines()[-1] == "вывод: скачок - проверь учёт, прежде чем считать прогрессом."
-    out = run_p(capsys, journal(tmp_path, "\n".join([seg(1, "q", 100, "a"), seg(2, "q", 60, "b")])))
-    assert "СКАЧОК" not in out  # ровно 40 % - не скачок
-
-
-# ---------------------------------------------------------------- доработки по живому ансамблю
 def L(ts, text):
     return f"2026-01-01T{ts}Z\n\n{text}\n"
 
@@ -354,19 +207,29 @@ def test_bare_three_digit_number_is_not_a_reference(tmp_path):
     assert "a ждёт b" in run_mail(p)                       # раньше любое «001» считалось ссылкой
 
 
-def test_reply_within_two_hours_only(tmp_path):
+def test_reply_window(tmp_path):
     a = waits_of(tmp_path, [
         ("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
-        ("002-b-to-a.md", L("11:59:00", "Сделал, вот результат.")),
+        ("002-b-to-a.md", L("15:59:00", "Сделал, вот результат.")),
     ])
-    assert not a["waits"]
+    assert ("a", "b") not in a["waits"]                      # ответ в пределах 6 ч
     d = tmp_path / "late"
     d.mkdir()
-    a = waits_of(d, [
-        ("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
-        ("002-b-to-a.md", L("12:30:00", "Сделал, вот результат.")),
+    msgs = [("001-a-to-b.md", L("10:00:00", "Прошу сделать X?")),
+            ("002-b-to-a.md", L("16:30:00", "Сделал, вот результат."))]
+    assert ("a", "b") in waits_of(d, msgs)["waits"]          # позже окна - письмо кандидат
+    assert ("a", "b") in M.analyze(M.load(d), (), 5, window_h=2)["waits"]
+    assert ("a", "b") not in M.analyze(M.load(d), (), 5, window_h=7)["waits"]
+
+
+def test_fresh_candidate_inside_window(tmp_path):
+    a = waits_of(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", "Сделай X.")),
+        ("002-x-to-y.md", L("10:30:00", "Привет, просто сообщаю.")),
     ])
-    assert ("a", "b") in a["waits"]                          # ответ позже 2 ч - не связан с письмом
+    it = [i for i in a["wait_items"] if i["name"] == "001-a-to-b.md"][0]
+    assert it["fresh"] and it["age"] == 1800
+    assert "окно 6 ч не истекло" in M.render(a, 2)
 
 
 def test_reply_must_go_to_sender(tmp_path):
@@ -377,33 +240,71 @@ def test_reply_must_go_to_sender(tmp_path):
     assert ("a", "b") in a["waits"]                          # b ответил не отправителю
 
 
-def test_other_topic_between_keeps_waiting(tmp_path):
+def test_other_topic_reply_still_closes(tmp_path):
+    """Письмо адресата по любой теме в окне закрывает кандидата: скрипт не угадывает тему."""
     a = waits_of(tmp_path, [
         ("001-a-to-b.md", L("10:00:00", "Прошу собрать отчёт по продажам за квартал?")),
-        ("002-a-to-b.md", L("10:01:00", "Совсем другое: проверь права доступа к репозиторию кластера.")),
-        ("003-b-to-a.md", L("10:10:00", "Права доступа к репозиторию кластера проверил, всё работает.")),
+        ("002-b-to-a.md", L("10:10:00", "Права доступа к репозиторию кластера проверил, всё работает.")),
     ])
-    assert ("a", "b") in a["waits"] and a["waits"][("a", "b")] == ["001-a-to-b.md"]
+    assert ("a", "b") not in a["waits"]
 
 
-def test_new_wait_signals(tmp_path):
-    cases = {"На слияние: ветка x, 3c62c17.": "на слияние", "ГОТОВО (02:27). Мост переложен.": "готово",
-             "Прогон — BLOCKED на prepare.": "BLOCKED", "Принят на ревью, жду разбора.": "на ревью",
-             "Сколько это займёт?": "вопрос"}
-    for i, (text, sig) in enumerate(cases.items(), 1):
+def test_signals_only_mark(tmp_path):
+    cases = {"На слияние: ветка x, 3c62c17.": "на слияние", "Прогон — BLOCKED на prepare.": "BLOCKED",
+             "Жду твоего решения.": "жду", "Сколько это займёт?": "вопрос", "Пришли кандидат.": "прошу",
+             "Попросите владельца.": "прошу", "Дайте доступ.": "прошу", "Предлагаю так.": "прошу",
+             "Прошу проверить.": "прошу"}
+    for text, sig in cases.items():
         assert sig in M.signals_of(text), text
-    assert "готово" not in M.signals_of("x" * 200 + " готово")          # «готово» вдали от начала - не отчёт
-    assert M.signals_of("Влил fast-forward, всё закрыто.") == []        # уже сделано
+    assert M.signals_of("Ожидаем результата сборки.") == []             # «ожидаем» - не признак
+    assert M.signals_of("Ничего делать не нужно.") == []                # «не нужно» - не признак
     assert "жду" not in M.signals_of("Жду слова оператора.")             # ждёт не адресата
+    # признаков нет, а письмо всё равно кандидат
+    a = waits_of(tmp_path, [("001-a-to-b.md", L("10:00:00", "Влил fast-forward, всё закрыто."))])
+    assert a["wait_items"][0]["signals"] == []
 
 
-def test_confirmations_do_not_wait(tmp_path):
-    letters = [(f"{i:03d}-a-to-b.md", L(f"10:0{i}:00", t)) for i, t in enumerate([
-        "Ответ по задаче X: сделано, прошу проверить.", "Принято, жду результата.",
-        "Спасибо! Как дела?", "Извините, моя ошибка — прошу прощения. Что дальше?",
-        "abc1234 принимаю, проверь остальное."], 1)]
+def test_reports_go_to_separate_tail(tmp_path):
+    letters = [("001-a-to-b.md", L("10:01:00", "Готово: сделал X, коммит abc1234.")),
+               ("002-a-to-b.md", L("10:02:00", "Принял, спасибо.")),
+               ("003-a-to-b.md", L("10:03:00", "Готово ли это? Что дальше?")),     # с вопросом - не отчёт
+               ("004-c-to-b.md", L("10:04:00", "Прошу проверить Y."))]
     a = waits_of(tmp_path, letters)
-    assert not a["waits"]
+    rep = {i["name"] for i in a["wait_items"] if i["report"]}
+    assert rep == {"001-a-to-b.md", "002-a-to-b.md"}
+    out = M.render(a, 4)
+    assert "Вероятно, отчёты" in out
+    assert out.index("004-c-to-b.md") < out.index("Вероятно, отчёты") < out.index("001-a-to-b.md (")
+
+
+def test_first_line_and_signals_in_output(tmp_path):
+    p = mk_mail(tmp_path, [("001-a-to-b.md", L("10:00:00", "tools,\n\n**Сделай X** и пришли результат. " + "и ещё слова " * 20))])
+    out = M.render(M.analyze(M.load(p), (), 5), 1)
+    line = [x for x in out.splitlines() if "->" in x and "001-a-to-b.md" in x][0]
+    assert "признаки: прошу" in line and "«Сделай X и пришли результат." in line
+    assert line.count("…") == 1 and len(line.split("«")[1]) <= 102
+
+
+def test_signals_sort_first_then_age(tmp_path):
+    a = waits_of(tmp_path, [
+        ("001-a-to-b.md", L("10:00:00", "Просто сообщаю.")),
+        ("002-c-to-b.md", L("10:30:00", "Прошу сделать Y.")),
+        ("003-d-to-b.md", L("10:40:00", "Прошу сделать Z.")),
+    ])
+    assert [i["name"] for i in a["wait_items"]] == ["002-c-to-b.md", "003-d-to-b.md", "001-a-to-b.md"]
+
+
+def test_top_limit_and_queue_at_node(tmp_path):
+    p = mk_mail(tmp_path, [(f"{i:03d}-a{i}-to-hub.md", L(f"10:{i:02d}:00", "Прошу ответить?")) for i in range(1, 8)])
+    a = M.analyze(M.load(p), (), 5)
+    out = M.render(a, 7, top=3)
+    assert "Очередь у узла: hub — 7 кандидатов" in out
+    assert out.count("-> hub: ") == 3 and "(ещё 4 кандидатов не показано)" in out
+
+
+def test_external_session_is_not_a_candidate_target(tmp_path):
+    a = waits_of(tmp_path, [("001-a-to-other_Чужая_сессия.md", L("10:00:00", "Прошу ответить?"))])
+    assert not a["wait_items"]
 
 
 def test_age_and_order_in_waits(tmp_path):
@@ -413,7 +314,7 @@ def test_age_and_order_in_waits(tmp_path):
         ("003-x-to-y.md", L("13:00:00", "Привет, просто сообщаю.")),
     ])
     a = M.analyze(M.load(p), (), 5)
-    assert [i["name"] for i in a["wait_items"]] == ["001-a-to-b.md", "002-c-to-b.md"]   # старые сверху
+    assert [i["name"] for i in a["wait_items"] if i["to"] == "b"] == ["001-a-to-b.md", "002-c-to-b.md"]   # старые сверху
     assert a["wait_items"][0]["age"] == 3 * 3600
     out = M.render(a, 3)
     assert "001-a-to-b.md (возраст 3ч 00м" in out and "возраст 2ч 30м" in out

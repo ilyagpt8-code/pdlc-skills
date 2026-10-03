@@ -265,3 +265,63 @@ def test_failed_send_and_empty_notify_are_not_letters(tmp_path):
     C.main([str(out), f"anna={a}"])
     assert len(names(out)) == 1
     assert "Дошло" in (out / "mail" / names(out)[0]).read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- псевдонимы и дубли
+def test_name_with_bracket_suffix_is_same_role(tmp_path):
+    """«Название [e7f7e9]» - то же имя, что заголовок журнала роли; id local_ из такого письма -
+    тоже эта роль; отправка по имени с суффиксом идёт роли, а не other_."""
+    hdr = {"type": "custom-title", "customTitle": "Поиск устройств", "sessionId": "s"}
+    a = write(tmp_path, f"{AID}.jsonl", [
+        hdr,
+        send("2026-01-01T10:01:00Z", "Борис сессия [e7f7e9]", "Вопрос к Борису?", "a1")])
+    b = write(tmp_path, f"{BID}.jsonl", [
+        {"type": "custom-title", "customTitle": "Борис сессия", "sessionId": "s2"},
+        incoming("2026-01-01T10:05:00Z", XID2, "Привет от Анны", "Поиск устройств [e7f7e9]"),
+        send_mcp("2026-01-01T10:06:00Z", XID2, "Ответ Анне", "b1")])
+    out = tmp_path / "o"
+    C.main([str(out), f"anna={a}", f"boris={b}"])
+    assert names(out) == ["001-anna-to-boris.md", "002-anna-to-boris.md", "003-boris-to-anna.md"] or \
+        not any("other" in n for n in names(out))
+    assert not any("other" in n for n in names(out))
+
+
+XID2 = "local_eeeeeeee-5555-4555-8555-eeeeeeeeeeee"
+
+
+def test_restart_id_joins_role_by_name(tmp_path):
+    """После перезапуска у сессии новый local_<uuid>; во входящих он идёт с тем же именем."""
+    NEW = "local_ffffffff-6666-4666-8666-ffffffffffff"
+    a = write(tmp_path, f"{AID}.jsonl", [{"type": "custom-title", "customTitle": "Сессия Анны", "sessionId": "s"}])
+    b = write(tmp_path, f"{BID}.jsonl", [
+        incoming("2026-01-01T10:00:00Z", XID2, "До перезапуска", "Сессия Анны [abc123]"),
+        incoming("2026-01-01T11:00:00Z", NEW, "После перезапуска", "Сессия Анны [abc123]"),
+        send_mcp("2026-01-01T11:05:00Z", NEW, "Ответ", "r")])
+    out = tmp_path / "o"
+    C.main([str(out), f"anna={a}", f"boris={b}"])
+    assert names(out) == ["001-anna-to-boris.md", "002-anna-to-boris.md", "003-boris-to-anna.md"]
+
+
+def test_duplicate_send_record_with_same_tool_use_id_is_one_letter(tmp_path):
+    row = send("2026-01-01T10:01:00Z", "boris", "Сделай X?", "a1")
+    dup = send("2026-01-01T10:01:00Z", "boris", "Сделай X?", "a1")        # тот же tool_use id
+    other = {"type": "assistant", "timestamp": "2026-01-01T10:01:30Z", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "tother", "name": "SendMessage", "input": {"to": "boris", "message": "Сделай X?"}}]}}
+    a = write(tmp_path, f"{AID}.jsonl", [row, dup])
+    b = write(tmp_path, f"{BID}.jsonl", [{"type": "custom-title", "customTitle": "boris", "sessionId": "s"}])
+    out = tmp_path / "o"
+    C.main([str(out), f"anna={a}", f"boris={b}"])
+    assert names(out) == ["001-anna-to-boris.md"]
+    a2 = write(tmp_path, "x.jsonl", [row, other])                         # разные id - два письма
+    out2 = tmp_path / "o2"
+    C.main([str(out2), f"anna={a2}", f"boris={b}"])
+    assert len(names(out2)) == 2
+
+
+def test_duplicate_incoming_record_same_time_is_one_letter(tmp_path):
+    rec = incoming("2026-01-01T10:05:00Z", f"local_{AID}", "Привет", "Анна")
+    a = write(tmp_path, f"{AID}.jsonl", [])
+    b = write(tmp_path, f"{BID}.jsonl", [rec, rec])
+    out = tmp_path / "o"
+    C.main([str(out), f"anna={a}", f"boris={b}"])
+    assert names(out) == ["001-anna-to-boris.md"]
