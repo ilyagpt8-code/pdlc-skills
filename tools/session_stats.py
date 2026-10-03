@@ -23,6 +23,8 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+import repeat_work as RW
+
 # цены за 1 млн токенов по умолчанию: Haiku 4.5 (вход, вывод, чтение кэша, запись кэша)
 DEFAULT_PRICES = (1.0, 5.0, 0.10, 1.25)
 DEFAULT_PRICES_NAME = "Haiku 4.5"
@@ -480,6 +482,7 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None, pric
                 else:
                     addr[(other, role)] += 1
     res["адресаты"] = [{"от": a, "кому": b, "раз": c} for (a, b), c in addr.items()]
+    res["однообразная_работа"] = RW.find_repeats(recs, model_prices, pr)
     return res
 
 
@@ -539,6 +542,11 @@ def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
                 L.append(f"  {x['раз']}x {x['команда']} ({', '.join(x['refs'])}...)")
         else:
             L.append("повторы команд (3+ раз): нет")
+        rw = r.get("однообразная_работа")
+        if rw:
+            L.append(RW.render_role_line(r["роль"], rw))
+            L.extend(RW.render_role_extra(r["роль"], rw))
+            L.extend(RW.render_role_details(r["роль"], rw))
         m = r["метрики"]
         if m:
             L.append(f"строки метрик: {len(m)} (ряд: ссылка, накопленный вывод токенов, строка)")
@@ -550,6 +558,8 @@ def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
         else:
             L.append("строки метрик: нет")
         L.append("")
+    L.extend(RW.render_candidates(results))
+    L.append("")
     addr = [a for r in results for a in r["адресаты"]]
     L.append(f"ИТОГО стоимость ансамбля: ${sum(r['стоимость']['usd'] for r in results):.2f}")
     if addr:
