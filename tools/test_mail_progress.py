@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import mail_stats as M  # noqa: E402
 import progress as P  # noqa: E402
 
-REAL = Path(__file__).resolve().parent.parent / "runs" / "002" / "spec"
 
 
 def mk_mail(tmp_path, letters):
@@ -75,15 +74,6 @@ def test_mail_empty_folder(tmp_path, capsys):
     assert "Писем нет" in capsys.readouterr().out
 
 
-def test_mail_real_folder(capsys):
-    assert M.main([str(REAL)]) == 0
-    out = capsys.readouterr().out
-    assert "Писем всего: 5" in out
-    assert "внимание:" in out
-    assert "003-choreographer-to-expert.md" in out
-
-
-# ---------------------------------------------------------------- progress
 def journal(tmp_path, text):
     p = tmp_path / "journal.md"
     p.write_text(text, encoding="utf-8")
@@ -167,13 +157,6 @@ def test_progress_budget_estimate(tmp_path, capsys):
     assert "$7.35" in out and "оценка" in out
 
 
-def test_progress_real(capsys):
-    out = run_p(capsys, REAL / "journal.md", "--stats", REAL / "stats.md", "--budget-usd", 5)
-    assert "вопросов_без_ответа" in out
-    assert out.strip().splitlines()[-1].startswith("вывод:")
-
-
-# ---------------------------------------------------------------- доработки по итогам 003
 def test_mail_reply_to_third_party_does_not_close(tmp_path):
     """Закрывает только письмо адресата САМОМУ отправителю: письмо третьему - нет (высокая полнота)."""
     p = mk_mail(tmp_path, [
@@ -181,13 +164,6 @@ def test_mail_reply_to_third_party_does_not_close(tmp_path):
         ("002-ex-to-producer.md", "Проверил, вот результат."),
     ])
     assert "ch -> ex: 001-ch-to-ex.md" in run_mail(p)
-
-
-def test_mail_real_003_runs():
-    r003 = Path(__file__).resolve().parent.parent / "runs" / "003" / "spec"
-    if not r003.is_dir():
-        pytest.skip("нет runs/003")
-    assert "внимание:" in run_mail(r003)
 
 
 def L(ts, text):

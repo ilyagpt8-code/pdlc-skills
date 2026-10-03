@@ -128,10 +128,13 @@ def test_cli(tmp_path):
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.skipif(not (REPO / "runs/006/A1/TASK.md").exists(), reason="нет runs/006")
+GOLDEN = pathlib.Path(__file__).resolve().parent / "golden" / "006"
+
+
 def test_matches_run_006(tmp_path):
+    # Эталон — тексты проверенного прогона 006 (engine/golden/006): генератор их воспроизводит.
     base = gen(tmp_path)
     for rel in ("A1/TASK.md", "A1/COMMON.md", "A1/control.md", "B1/TASK.md", "B1/COMMON.md",
                 "SCHEDULE-A.md", "SCHEDULE-B.md"):
-        want = (REPO / "runs/006" / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        want = (GOLDEN / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
         assert (base / rel).read_text(encoding="utf-8") == want, rel

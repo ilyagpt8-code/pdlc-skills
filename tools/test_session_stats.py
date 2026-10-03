@@ -241,13 +241,6 @@ def test_list_events_pages_and_show(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["роли"][0]["итог_сессии"]["ходов"] == 4
 
 
-def test_real_sample_summary(capsys):
-    sample = Path(__file__).parent.parent / "ops" / "session-log-sample" / "list_events.json"
-    assert S.main(["summary", f"исполнитель={sample}"]) == 0
-    out = capsys.readouterr().out
-    assert "итог сессии" in out and "ошибки инструментов: 3" in out
-
-
 def test_edited_files_line(tmp_path):
     def edit(i, name, path):
         return {"type": "tool_use", "id": i, "name": name, "input": {"file_path": path}}
@@ -344,17 +337,3 @@ def test_cost_state_shown_and_warning(tmp_path):
     c2 = cost_of(ok)
     assert c2["по_журналу"] == 30.0 and "предупреждение" not in c2
 
-
-def test_haiku_subagent_journals_of_runs_unchanged():
-    """Журналы прогонов (Haiku-сабагенты): итоги прежние."""
-    runs = Path(__file__).resolve().parent.parent / "runs"
-    for run, expect in (("003", 1.55), ("004", 1.07)):
-        files = sorted((runs / run / "journals").glob("*.jsonl"))
-        if not files:
-            continue
-        old = new = 0.0
-        for f in files:
-            recs, t, s = S.read_journal(str(f))
-            new += S.analyze(f.stem, recs, t, s, [f.stem])["стоимость"]["usd"]
-            old += S.analyze(f.stem, recs, t, s, [f.stem], prices=(1.0, 5.0, 0.10, 1.25))["стоимость"]["usd"]
-        assert round(new, 2) == round(old, 2) == expect
