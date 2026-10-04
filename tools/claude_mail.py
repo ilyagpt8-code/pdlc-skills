@@ -455,7 +455,14 @@ def build(outdir, pairs, since=None, until=None, anon_words=None):
         lab = (lambda x: anonymize(x, anon_words)) if anon_words else (lambda x: x)
         name = f"{i:03d}-{safe_role(lab(m['frm']))}-to-{safe_role(lab(m['to']))}.md"
         (mdir / name).write_text(f"{m['ts'].strftime('%Y-%m-%dT%H:%M:%SZ')}\n\n{text}\n", encoding="utf-8")
-    metrics.sort(key=lambda x: x[0])
+    # Строки метрик и из писем между сессиями: участники ансамбля сообщают остаток письмом
+    # (скилл ensemble-member), а не только в ответах модели.
+    for m in mails:
+        for ln in m["text"].splitlines():
+            ln = ln.strip().strip("`").lstrip("-* ").strip()
+            if S.METRIC_RE.match(ln):
+                metrics.append((m["ts"], ln))
+    metrics = sorted(set(metrics), key=lambda x: x[0])
     (out / "journal.md").write_text(
         "# Журнал ансамбля (метрики из ответов агентов)\n\n" + "".join(f"{x}\n" for _, x in metrics),
         encoding="utf-8")

@@ -310,7 +310,12 @@ def main(argv=None) -> int:
     t, cost = None, None
     if a.stats:
         try:
-            t, cost = parse_stats(Path(a.stats).read_text(encoding="utf-8", errors="replace"))
+            stats_text = Path(a.stats).read_text(encoding="utf-8", errors="replace")
+            t, cost = parse_stats(stats_text)
+            # session_stats считает стоимость по модели каждой роли — она точнее оценки по ценам Haiku
+            m_total = re.search(r"ИТОГО стоимость ансамбля:\s*\$([0-9.]+)", stats_text)
+            if m_total:
+                cost = float(m_total.group(1))
         except OSError:
             L.append(f"stats не прочитан: {a.stats}")
     est = False
