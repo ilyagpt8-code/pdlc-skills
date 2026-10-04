@@ -337,3 +337,22 @@ def test_cost_state_shown_and_warning(tmp_path):
     c2 = cost_of(ok)
     assert c2["по_журналу"] == 30.0 and "предупреждение" not in c2
 
+
+
+def test_background_tasks_hanging_and_done(tmp_path):
+    rows = [
+        A("2026-09-21T10:00:00Z", [tu("t1", "pytest -q"), tu("t2", "long gate")], "m1"),
+        U("2026-09-21T10:00:01Z", [tr("t1", "Command running in background with ID: b1"),
+                                   tr("t2", "Command running in background with ID: b2")]),
+        U("2026-09-21T10:30:00Z", "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t1</tool-use-id>\n"
+                                  "<status>failed</status>\n</task-notification>"),
+        A("2026-09-21T12:00:00Z", [{"type": "text", "text": "жду"}], "m2"),
+    ]
+    p = write(tmp_path, "bg.jsonl", rows, junk=False)
+    out = S.read_journal(p)
+    recs = out[0] if isinstance(out, tuple) else out
+    bg = S.background_tasks(recs, lambda n: f"x#{n}")
+    assert bg["запущено"] == 2
+    assert bg["завершено"] == {"failed": 1}
+    assert len(bg["висят"]) == 1 and bg["висят"][0]["сек"] == 7200
+    assert "long gate" in bg["висят"][0]["что"]

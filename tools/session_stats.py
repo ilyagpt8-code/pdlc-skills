@@ -487,7 +487,40 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None, pric
                     addr[(other, role)] += 1
     res["адресаты"] = [{"от": a, "кому": b, "раз": c} for (a, b), c in addr.items()]
     res["однообразная_работа"] = RW.find_repeats(recs, model_prices, pr)
+    res["фоновые"] = background_tasks(recs, ref)
     return res
+
+
+BG_STALE = 24 * 3600    # висящие дольше суток - скорее сняты без уведомления; только счётчик
+BG_LAUNCH_RE = re.compile(r"running in background|Async agent launched", re.I)
+BG_DONE_RE = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>.*?<status>([^<]+)</status>", re.S)
+
+
+def background_tasks(recs, ref):
+    """Фоновые задачи окна: запущенные, завершённые (по уведомлению) и висящие к концу окна."""
+    launched, done = {}, {}
+    tool_of = {}
+    for r in recs:
+        for tid, name, inp in r["tools"]:
+            tool_of[tid] = (r, name, inp)
+        for tid, _err, text in r["results"]:
+            if tid in tool_of and BG_LAUNCH_RE.search(text or ""):
+                lr, name, inp = tool_of[tid]
+                launched[tid] = (lr, name, str(inp.get("description") or inp.get("command") or ""))
+        if r["kind"] == "user" and "<task-notification>" in r["text"]:
+            for m in BG_DONE_RE.finditer(r["text"]):
+                done.setdefault(m.group(1), m.group(2).strip())
+    end = max((r["ts"] for r in recs if r["ts"]), default=None)
+    hanging = []
+    for tid, (lr, name, desc) in launched.items():
+        if tid not in done:
+            age = int((end - lr["ts"]).total_seconds()) if end and lr["ts"] else 0
+            hanging.append({"ref": ref(lr["n"]), "инструмент": name, "сек": age, "что": _clip(desc, 70)})
+    hanging.sort(key=lambda x: -x["сек"])
+    old = [x for x in hanging if x["сек"] > BG_STALE]
+    st = Counter(done[t] for t in launched if t in done)
+    return {"запущено": len(launched), "завершено": dict(st),
+            "висят": [x for x in hanging if x["сек"] <= BG_STALE], "старше_суток": len(old)}
 
 
 # ---------------------------------------------------------------- вывод
@@ -546,6 +579,15 @@ def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
                 L.append(f"  {x['раз']}x {x['команда']} ({', '.join(x['refs'])}...)")
         else:
             L.append("повторы команд (3+ раз): нет")
+        bg = r.get("фоновые")
+        if bg and bg["запущено"]:
+            fin = ", ".join(f"{k} {v}" for k, v in sorted(bg["завершено"].items())) or "нет"
+            L.append(f"фоновые задачи: запущено {bg['запущено']}; завершились: {fin}; "
+                     f"без завершения к концу окна: {len(bg['висят'])}"
+                     + (f" (и старше суток, вероятно сняты без уведомления: {bg['старше_суток']})"
+                        if bg.get("старше_суток") else ""))
+            for x in bg["висят"][:5]:
+                L.append(f"  висит {_dur(x['сек'])}: {x['ref']} {x['инструмент']} «{x['что']}»")
         rw = r.get("однообразная_работа")
         if rw:
             L.append(RW.render_role_line(r["роль"], rw))
