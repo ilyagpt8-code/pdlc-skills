@@ -44,6 +44,7 @@ def main(argv=None) -> int:
     ap.add_argument("roles_file")
     ap.add_argument("outdir")
     ap.add_argument("--max-age-hours", type=float, default=12)
+    ap.add_argument("--until", default=None, help="ISO-время: снимок на этот момент (переигровка истории)")
     a = ap.parse_args(argv)
     pairs = []
     for line in Path(a.roles_file).read_text(encoding="utf-8").splitlines():
@@ -55,9 +56,10 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     items = [f"{r}={p}" for r, p in pairs]
     roles = ",".join(r for r, _ in pairs)
-    subprocess.run([sys.executable, str(TOOLS / "claude_mail.py"), str(out), *items], check=True,
+    until = ["--until", a.until] if a.until else []
+    subprocess.run([sys.executable, str(TOOLS / "claude_mail.py"), str(out), *items, *until], check=True,
                    capture_output=True, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-    run([str(TOOLS / "session_stats.py"), "summary", *items], out / "stats.md")
+    run([str(TOOLS / "session_stats.py"), "summary", *items, *until], out / "stats.md")
     run([str(TOOLS / "mail_stats.py"), str(out), "--roles", roles, "--max-age-hours", str(a.max_age_hours)],
         out / "mail_stats.md")
     run([str(TOOLS / "progress.py"), str(out / "journal.md"), "--stats", str(out / "stats.md")], out / "progress.md")
