@@ -145,7 +145,7 @@ def test_summary_text_and_json(tmp_path, capsys):
     assert S.main(["summary", f"продюсер={p}", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["роли"][0]["токены"]["вывод"] == 70
-    assert data["total_cost_usd"] == data["роли"][0]["стоимость"]["usd"]
+    assert "total_cost_usd" not in data and "стоимость" not in data["роли"][0]
 
 
 # ---------------------------------------------------------------- формат list_events
@@ -214,7 +214,7 @@ def test_list_events_tokens_from_result(tmp_path):
     r = S.analyze("исп", *S.read_journal(p), ["исп"])
     assert r["токены"]["вывод"] == 900 and r["токены"]["вход_кэш_чтение"] == 5000
     it = r["итог_сессии"]
-    assert it["стоимость_usd"] == 0.5 and it["длительность_мс"] == 61000 and it["ходов"] == 4
+    assert "стоимость_usd" not in it and it["длительность_мс"] == 61000 and it["ходов"] == 4
     assert "итог сессии" in S.render_text([r])
 
 
@@ -254,89 +254,18 @@ def test_edited_files_line(tmp_path):
     assert "изменённые файлы: /x/a.md (2), /x/b.md (1)" in S.render_text([res])
 
 
-def test_cost_estimate_line_total_and_prices_flag(tmp_path, capsys):
-    p = make_prod(tmp_path)
-    # токены: вывод 70, вход 50, чтение кэша 500, запись кэша - см. analyze
-    r = S.analyze("p", *S.read_journal(p), ["p"])
-    tk = r["токены"]
-    exp = (tk["вход_без_кэша"] * 1 + tk["вывод"] * 5 + tk["вход_кэш_чтение"] * 0.10
-           + tk["вход_кэш_запись"] * 1.25) / 1e6
-    assert abs(r["стоимость"]["usd"] - exp) < 1e-9 and r["стоимость"]["источник"] == "оценка"
-    assert S.main(["summary", f"продюсер={p}"]) == 0
-    out = capsys.readouterr().out
-    assert "стоимость: $0.00 (оценка по ценам Haiku 4.5)" in out
-    assert "ИТОГО стоимость ансамбля: $0.00" in out
-    assert S.main(["summary", f"продюсер={p}", "--json", "--prices", "1000000,0,0,0"]) == 0
-    data = json.loads(capsys.readouterr().out)
-    assert abs(data["total_cost_usd"] - 50) < 1e-9
-
-
-def test_cost_from_log_result_line(tmp_path):
+def test_cost_records_are_ignored(tmp_path, capsys):
     rows = [json.loads(x) for x in open(make_prod(tmp_path), encoding="utf-8") if x.strip().startswith("{")]
     rows.append({"type": "result", "total_cost_usd": 1.5})
+    rows.append({"type": "cost-state", "sessionId": "s", "totalCostUSD": 5.0})
     p = write(tmp_path, "withcost.jsonl", rows, junk=False)
+    base = S.analyze("p", *S.read_journal(make_prod(tmp_path)), ["p"])
     r = S.analyze("p", *S.read_journal(p), ["p"])
-    assert r["стоимость"] == {"usd": 1.5, "источник": "из журнала"}
-    assert "стоимость: $1.50 (из журнала)" in S.render_text([r])
-
-
-# ---------------------------------------------------------------- цены по модели, cost-state
-def model_journal(tmp_path, model, name="m.jsonl", extra=(), usage=None):
-    u = usage or {"input_tokens": 1_000_000, "output_tokens": 1_000_000,
-                  "cache_read_input_tokens": 1_000_000, "cache_creation_input_tokens": 1_000_000}
-    a = A("2026-01-01T10:00:05Z", [{"type": "text", "text": "ответ"}], "m1", u)
-    if model:
-        a["message"]["model"] = model
-    return write(tmp_path, name, [U("2026-01-01T10:00:00Z", "задание достаточно длинное для проверки"), a, *extra], junk=False)
-
-
-def cost_of(path, **kw):
-    recs, t, s = S.read_journal(path)
-    return S.analyze("p", recs, t, s, ["p"], **kw)["стоимость"]
-
-
-def test_price_table_by_message_model(tmp_path):
-    # на 1 млн токенов каждого вида: вход + вывод + чтение кэша + запись кэша
-    assert cost_of(model_journal(tmp_path, "claude-haiku-4-5-20251001"))["usd"] == 1 + 5 + 0.10 + 1.25
-    assert cost_of(model_journal(tmp_path, "claude-opus-5-5", "o.jsonl"))["usd"] == 4 + 20 + 0.2 + 8
-    assert cost_of(model_journal(tmp_path, "claude-sonnet-5-5", "s.jsonl"))["usd"] == 2 + 10 + 0.2 + 2.5
-    c = cost_of(model_journal(tmp_path, "claude-opus-5-5", "o2.jsonl"))
-    assert "Opus 5.5" in c["цены"] and "допущение" in c["цены"]
-    # без модели и неизвестная модель - Haiku 4.5 (поведение журналов прогонов)
-    assert cost_of(model_journal(tmp_path, None, "n.jsonl"))["usd"] == 7.35
-    assert "нет цены для claude-fable-9" in cost_of(model_journal(tmp_path, "claude-fable-9", "f.jsonl"))["цены"]
-
-
-def test_price_table_mixed_models_and_prices_flag(tmp_path):
-    u = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
-    b = A("2026-01-01T10:00:06Z", [{"type": "text", "text": "второй"}], "m2", u)
-    b["message"]["model"] = "claude-opus-5-5"
-    p = model_journal(tmp_path, "claude-haiku-4-5", "mix.jsonl", extra=[b], usage=u)
-    assert cost_of(p)["usd"] == 1 + 4                         # Haiku 1 + Opus 4 за 1 млн входа
-    assert cost_of(p, prices=(10, 0, 0, 0))["usd"] == 20       # --prices перекрывает таблицу
-
-
-def test_prices_flag_still_overrides_cli(tmp_path, capsys):
-    p = model_journal(tmp_path, "claude-opus-5-5")
-    assert S.main(["summary", f"p={p}", "--json", "--prices", "1,1,1,1"]) == 0
-    assert json.loads(capsys.readouterr().out)["total_cost_usd"] == 4
-
-
-def test_cost_state_shown_and_warning(tmp_path):
-    cs = {"type": "cost-state", "sessionId": "s", "totalCostUSD": 5.0}
-    cs2 = {"type": "cost-state", "sessionId": "s", "totalCostUSD": 100.0}
-    p = model_journal(tmp_path, "claude-opus-5-5", extra=[cs, cs2])     # оценка 32.2, журнал 100 (последний)
-    c = cost_of(p)
-    assert c["по_журналу"] == 100.0 and c["usd"] == 32.2 and "предупреждение" in c
-    recs, t, s = S.read_journal(p)
-    out = S.render_text([S.analyze("p", recs, t, s, ["p"])])
-    assert "по журналу (cost-state): $100.00" in out and "ВНИМАНИЕ" in out
-    # расхождение в пределах 25% - без предупреждения
-    ok = model_journal(tmp_path, "claude-opus-5-5", "ok.jsonl",
-                       extra=[{"type": "cost-state", "sessionId": "s", "totalCostUSD": 30.0}])
-    c2 = cost_of(ok)
-    assert c2["по_журналу"] == 30.0 and "предупреждение" not in c2
-
+    assert r["токены"] == base["токены"] and "стоимость" not in r
+    out = S.render_text([r])
+    assert "стоимость" not in out.lower() and "$" not in out
+    assert S.main(["summary", f"p={p}"]) == 0
+    assert "стоимость" not in capsys.readouterr().out.lower()
 
 
 def test_background_tasks_hanging_and_done(tmp_path):

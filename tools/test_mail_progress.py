@@ -137,24 +137,14 @@ def test_progress_no_source(tmp_path, capsys):
     assert "БЕЗ ИСТОЧНИКА" in out
 
 
-def test_progress_budget(tmp_path, capsys):
-    j = journal(tmp_path, "отрезок 1: м=100 (было 120) [источник: a]\nотрезок 2: м=80 (было 100) [источник: a]\n")
+def test_progress_stats_tokens_only(tmp_path, capsys):
+    j = journal(tmp_path, "метрика: м=10 [источник: a]\n"
+                          "метрика: м=5 [источник: a]\n")
     s = tmp_path / "stats.md"
-    s.write_text("== a: 1 ==\nтокены: вывод 1000000; вход без кэша 0; вход через кэш: чтение 0, запись 0\n"
+    s.write_text("токены: вывод 1000000; вход без кэша 1000000; вход через кэш: чтение 1000000, запись 1000000\n"
                  "итог сессии (из события result): стоимость $2.0; ходов 3\n", encoding="utf-8")
-    out = run_p(capsys, j, "--stats", s, "--budget-usd", 3)
-    assert "Стоимость: $2.00" in out and "НЕ хватит" in out
-    out = run_p(capsys, j, "--stats", s, "--budget-usd", 100)
-    assert "хватит." in out and "НЕ" not in out.split("Бюджет")[1]
-
-
-def test_progress_budget_estimate(tmp_path, capsys):
-    j = journal(tmp_path, "метрика: м=10 [источник: a]\nметрика: м=5 [источник: a]\n")
-    s = tmp_path / "stats.md"
-    s.write_text("токены: вывод 1000000; вход без кэша 1000000; вход через кэш: чтение 1000000, запись 1000000\n",
-                 encoding="utf-8")
-    out = run_p(capsys, j, "--stats", s, "--budget-usd", 50)
-    assert "$7.35" in out and "оценка" in out
+    out = run_p(capsys, j, "--stats", s)
+    assert "вывод 1000000" in out and "стоимость" not in out.lower() and "$" not in out
 
 
 def test_mail_reply_to_third_party_does_not_close(tmp_path):

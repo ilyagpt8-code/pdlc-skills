@@ -53,7 +53,7 @@ def test_chain_found_and_nested_removed(tmp_path):
     assert pair["раз"] == 4 and pair["ответов_модели"] == 8
     # get и Edit по отдельности вложены в пару с теми же повторами - убраны
     assert not any(len(c["цепочка"]) == 1 for c in ch)
-    assert pair["usd"] > 0 and pair["токенов"] == 8 * 1110
+    assert "usd" not in pair and pair["токенов"] == 8 * 1110
     assert "Glob" not in " ".join(labels)
 
 
@@ -90,9 +90,22 @@ def test_skip_tools_and_json(tmp_path):
     r = run(tmp_path, steps)
     assert [c["цепочка"] for c in r["однообразная_работа"]["chains"]] == [["mcp__t__st()"]]
     json.dumps(r, ensure_ascii=False)
-    # заданные --prices тоже работают
-    r2 = run(tmp_path, steps, prices=(0, 0, 0, 0))
-    assert r2["однообразная_работа"]["chains"][0]["usd"] == 0
+
+
+def test_chains_ranked_by_tokens(tmp_path):
+    # частая дешёвая цепочка и редкая, но с большими ответами: по токенам первой идёт вторая
+    steps = []
+    for i in range(6):
+        steps += [("mcp__t__small", {"a": 1}, False)]
+    r = run(tmp_path, steps)
+    ch = r["однообразная_работа"]["chains"]
+    assert [c["токенов"] for c in ch] == sorted((c["токенов"] for c in ch), reverse=True)
+    rows = [
+        {"роль": "r", "однообразная_работа": {"chains": [
+            {"цепочка": ["a"], "раз": 9, "токенов": 100, "не_отработана": False, "доля_ошибок": 0, "первый_n": 1, "ключи": ["k1"]},
+            {"цепочка": ["b"], "раз": 3, "токенов": 900, "не_отработана": False, "доля_ошибок": 0, "первый_n": 2, "ключи": ["k2"]}]}}]
+    picked, _ = RW.candidates(rows)
+    assert [c["цепочка"] for _, c in picked] == [["b"], ["a"]]
 
 
 def test_search_and_anon_not_candidates(tmp_path):

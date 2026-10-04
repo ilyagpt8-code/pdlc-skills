@@ -2,7 +2,7 @@
 
 Используется из session_stats.py (summary): раздел «однообразная работа» по роли и
 «Кандидаты в инструмент». Только стандартная библиотека; формат журнала не знает -
-получает уже разобранные записи (см. session_stats.parse_line) и функцию цен по модели.
+получает уже разобранные записи (см. session_stats.parse_line).
 """
 from __future__ import annotations
 
@@ -144,21 +144,16 @@ def _usage_by_msg(recs):
     return by_id, model_of
 
 
-def _msg_cost(u, mp):
-    return (u["input_tokens"] * mp[0] + u["output_tokens"] * mp[1]
-            + u["cache_read_input_tokens"] * mp[2] + u["cache_creation_input_tokens"] * mp[3]) / 1e6
-
-
 def _is_run(g):
     """Цепочка - повтор более короткой (AA, ABAB): учитывается как короткая."""
     n = len(g)
     return any(n % p == 0 and g == g[:p] * (n // p) for p in range(1, n))
 
 
-def find_repeats(recs, model_prices, prices=None):
+def find_repeats(recs):
     """-> {"chains": [...], "role_tokens": int, "covered_tokens": int, "covered_pct": float,
-    "covered_chains": int, "calls": int}. Цепочки отсортированы по стоимости убыванию."""
-    by_id, model_of = _usage_by_msg(recs)
+    "covered_chains": int, "calls": int}. Цепочки отсортированы по токенам убыванию."""
+    by_id, _ = _usage_by_msg(recs)
     err_of = {}
     for r in recs:
         for tid, is_err, _t in r["results"]:
@@ -185,13 +180,6 @@ def find_repeats(recs, model_prices, prices=None):
     def tok(key):
         u = by_id.get(key)
         return sum(u.values()) if u else 0
-
-    def cost(key):
-        u = by_id.get(key)
-        if not u:
-            return 0.0
-        mp = tuple(prices) if prices else model_prices(model_of.get(key))[1]
-        return _msg_cost(u, mp)
 
     found = {}          # gram -> [start, ...] без перекрытий
     for n in range(1, MAX_LEN + 1):
@@ -225,10 +213,10 @@ def find_repeats(recs, model_prices, prices=None):
         chains.append({
             "цепочка": list(g), "раз": len(st), "вызовов": total, "доля_ошибок": round(ec, 3),
             "не_отработана": ec > ERR_LIMIT,
-            "токенов": sum(tok(k) for k in keys), "usd": round(sum(cost(k) for k in keys), 6),
+            "токенов": sum(tok(k) for k in keys),
             "ответов_модели": len(keys), "ключи": sorted(keys), "первый_n": wcalls[st[0]][2],
             "refs_n": [wcalls[s][2] for s in st[:3]]})
-    chains.sort(key=lambda c: (-c["usd"], -c["раз"]))
+    chains.sort(key=lambda c: (-c["токенов"], -c["раз"]))
     role_tok = sum(sum(u.values()) for u in by_id.values())
     cov = sum(tok(k) for k in all_keys)
     search_keys = {k for k, v in msg_kinds.items() if v == {"search"}}
@@ -263,7 +251,7 @@ def render_role_line(role, rep):
     ch = rep["chains"]
     if not ch:
         return f"однообразная работа: нет цепочек с {MIN_REPEATS}+ повторами"
-    top = ", ".join(f"{_label(c['цепочка'], 70)} ×{c['раз']}, ${c['usd']:.2f}" for c in ch[:3])
+    top = ", ".join(f"{_label(c['цепочка'], 70)} ×{c['раз']}" for c in ch[:3])
     return (f"однообразная работа: {rep['covered_pct']:g} % токенов роли в {rep['covered_chains']} "
             f"цепочках (топ-3: {top})")
 
@@ -273,12 +261,12 @@ def render_role_details(role, rep, limit=8):
     for i, c in enumerate(rep["chains"][:limit], 1):
         flag = f" — {NOT_READY}" if c["не_отработана"] else ""
         out.append(f"  {_label(c['цепочка'])} ×{c['раз']}: ошибок {int(c['доля_ошибок'] * 100)} %, "
-                   f"{c['токенов']} ток., ${c['usd']:.2f}, пример {role}#{c['первый_n']}{flag}")
+                   f"{c['токенов']} ток., пример {role}#{c['первый_n']}{flag}")
     return out
 
 
 def candidates(results, top=8):
-    """Кандидаты в инструмент: цепочки всех ролей без пометки «не отработана», топ по стоимости."""
+    """Кандидаты в инструмент: цепочки всех ролей без пометки «не отработана», топ по токенам."""
     rows, skipped = [], 0
     for r in results:
         rep = r.get("однообразная_работа") or {}
@@ -287,9 +275,9 @@ def candidates(results, top=8):
                 skipped += 1
             else:
                 rows.append((r["роль"], c))
-    rows.sort(key=lambda x: -x[1]["usd"])
+    rows.sort(key=lambda x: -x[1]["токенов"])
     # одни и те же ответы модели не считаем дважды: цепочка, у которой >= половины ответов уже
-    # вошли в более дорогую цепочку той же роли, - её вариант, в список не идёт
+    # вошли в более крупную цепочку той же роли, - её вариант, в список не идёт
     picked, used = [], defaultdict(set)
     for role, c in rows:
         ks = set(c.get("ключи") or ())
@@ -302,13 +290,13 @@ def candidates(results, top=8):
 
 def render_candidates(results, top=8):
     rows, skipped = candidates(results, top)
-    L = ["Кандидаты в инструмент (скрипт или MCP; топ по стоимости ответов модели вокруг цепочки):"]
+    L = ["Кандидаты в инструмент (скрипт или MCP; топ по токенам ответов модели вокруг цепочки):"]
     if not rows:
         L.append("  нет цепочек с 3+ повторами")
     for i, (role, c) in enumerate(rows, 1):
-        L.append(f"  {i}. {role}: {_label(c['цепочка'])} ×{c['раз']}, ${c['usd']:.2f}, "
+        L.append(f"  {i}. {role}: {_label(c['цепочка'])} ×{c['раз']}, "
                  f"ошибок {int(c['доля_ошибок'] * 100)} %, пример {role}#{c['первый_n']}")
-    # Второй взгляд: по числу повторов. Стоимость ответов вокруг цепочки завышена у долгих
+    # Второй взгляд: по числу повторов. Токены ответов вокруг цепочки завышены у долгих
     # сессий с большим контекстом; число повторов показывает, сколько вызовов заменит инструмент.
     shown = {(role, tuple(c["цепочка"])) for role, c in rows}
     by_count, used = [], defaultdict(set)
@@ -330,7 +318,7 @@ def render_candidates(results, top=8):
     if by_count:
         L.append("  ещё — по числу повторов (сколько вызовов заменит инструмент):")
         for role, c in by_count:
-            L.append(f"   - {role}: {_label(c['цепочка'])} ×{c['раз']}, ${c['usd']:.2f}, "
+            L.append(f"   - {role}: {_label(c['цепочка'])} ×{c['раз']}, "
                      f"ошибок {int(c['доля_ошибок'] * 100)} %, пример {role}#{c['первый_n']}")
     if skipped:
         L.append(f"  не включены: {skipped} цепочек с ошибками > {int(ERR_LIMIT * 100)} % ({NOT_READY})")

@@ -3,7 +3,6 @@
 
 Команды:
   summary роль=путь [роль=путь ...] [--since ISO] [--until ISO] [--json]
-                  [--prices вход,вывод,чтение_кэша,запись_кэша]
   show роль#N путь          (или: show роль#N роль=путь)
 
 Только стандартная библиотека. Два формата, определяются по содержимому файла:
@@ -25,34 +24,6 @@ from datetime import datetime, timezone
 
 import repeat_work as RW
 
-# цены за 1 млн токенов по умолчанию: Haiku 4.5 (вход, вывод, чтение кэша, запись кэша)
-DEFAULT_PRICES = (1.0, 5.0, 0.10, 1.25)
-DEFAULT_PRICES_NAME = "Haiku 4.5"
-# Цены по модели (message.model в журнале): подстрока имени модели -> (название, цены, примечание).
-# Haiku 4.5 - прайс-лист. ДОПУЩЕНИЕ: для Opus 5.5 цены 4/20/0.2/8 не из прайса, а подобраны по
-# журналам (сходятся с costUSD в cost-state на живом ансамбле). ДОПУЩЕНИЕ: для Sonnet 5.5 по
-# заданию предполагалось 3/15/0.3/3.75, но по cost-state живого ансамбля стоимость в 1.5 раза ниже
-# (4 сессии из 6 сходятся точно), поэтому взято 2/10/0.2/2.5; это тоже подбор, не прайс.
-# Модели других версий (claude-opus-5 и т.п.) - те же цены линейки с пометкой; неизвестная -> Haiku 4.5.
-MODEL_PRICES = (
-    ("haiku", ("Haiku 4.5", (1.0, 5.0, 0.10, 1.25), "")),
-    ("sonnet-5-5", ("Sonnet 5.5", (2.0, 10.0, 0.2, 2.5), "допущение, подобрано по cost-state")),
-    ("opus-5-5", ("Opus 5.5", (4.0, 20.0, 0.2, 8.0), "допущение, подобрано по cost-state")),
-    ("sonnet", ("Sonnet 5.5", (2.0, 10.0, 0.2, 2.5), "допущение, цены Sonnet 5.5 для другой версии")),
-    ("opus", ("Opus 5.5", (4.0, 20.0, 0.2, 8.0), "допущение, цены Opus 5.5 для другой версии")),
-)
-COST_WARN = 0.25        # расхождение оценки и cost-state журнала, после которого предупреждаем
-
-
-def model_prices(model):
-    """(название, цены, примечание) по имени модели; неизвестная/пустая -> Haiku 4.5."""
-    m = (model or "").lower()
-    for key, val in MODEL_PRICES:
-        if key in m:
-            return val
-    if m and not m.startswith("<"):
-        return (DEFAULT_PRICES_NAME, DEFAULT_PRICES, f"нет цены для {model}, взяты Haiku 4.5")
-    return (DEFAULT_PRICES_NAME, DEFAULT_PRICES, "")
 IDLE_GAP = 300          # секунд; пауза длиннее не входит в «активную работу»
 SHORT_LEN = 60          # реплика короче - кандидат в «пустую»
 SHOW_LIMIT = 2000
@@ -101,15 +72,6 @@ def parse_line(obj: dict, n: int):
     if not isinstance(obj, dict):
         return None
     kind = obj.get("type")
-    if kind == "result" and isinstance(obj.get("total_cost_usd"), (int, float)):
-        # итог из журнала: только стоимость, токены берутся из assistant-строк
-        return {"n": n, "kind": "logcost", "ts": _parse_ts(obj.get("timestamp")), "text": "",
-                "human": False, "tools": [], "results": [], "msg_id": None, "usage": None,
-                "has_thinking": False, "cost": float(obj["total_cost_usd"])}
-    if kind == "cost-state" and isinstance(obj.get("totalCostUSD"), (int, float)):
-        return {"n": n, "kind": "coststate", "ts": None, "text": "", "human": False, "tools": [],
-                "results": [], "msg_id": None, "usage": None, "has_thinking": False,
-                "cost": float(obj["totalCostUSD"])}
     if kind not in ("user", "assistant"):
         return None
     msg = obj.get("message")
@@ -195,7 +157,6 @@ def parse_event(ev, n: int):
         return {"n": n, "kind": "result", "ts": _parse_ts(ts), "text": "", "human": False,
                 "tools": [], "results": [], "msg_id": None, "usage": None, "has_thinking": False,
                 "result": {"tokens": tok, "models": sorted(mu),
-                           "cost": cc.get("total_cost_usd") if isinstance(cc.get("total_cost_usd"), (int, float)) else None,
                            "duration_ms": cc.get("duration_ms") if isinstance(cc.get("duration_ms"), (int, float)) else None,
                            "num_turns": cc.get("num_turns") if isinstance(cc.get("num_turns"), (int, float)) else None}}
     if not isinstance(cc.get("message"), dict):
@@ -307,7 +268,7 @@ def _addr_re(roles):
     return re.compile(rf"^\s*(?:(?P<a>{names})\s*:|(?:@|→\s*|->\s*)(?P<b>{names})\b)", re.I | re.M)
 
 
-def analyze(role: str, recs, total, skipped, roles, since=None, until=None, prices=None):
+def analyze(role: str, recs, total, skipped, roles, since=None, until=None):
     if since or until:
         recs = [r for r in recs if r["ts"] and (not since or r["ts"] >= since)
                 and (not until or r["ts"] <= until)]
@@ -315,22 +276,17 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None, pric
     res = {"роль": role, "строк": total, "пропущено": skipped, "записей": len(recs)}
 
     # токены: один раз на message.id (максимум по полям среди строк сообщения)
-    by_id, model_of = {}, {}
+    by_id = {}
     for r in recs:
         if r["kind"] == "assistant" and r["usage"] is not None:
             key = r["msg_id"] or f"_line{r['n']}"
             cur = by_id.setdefault(key, defaultdict(int))
             for k, v in r["usage"].items():
                 cur[k] = max(cur[k], v)
-            if r.get("model") and not r["model"].startswith("<"):
-                model_of[key] = r["model"]
     tot = defaultdict(int)
-    tok_by_model = defaultdict(lambda: defaultdict(int))     # название модели -> токены
     for key, u in by_id.items():
-        mname = model_prices(model_of.get(key))
         for k, v in u.items():
             tot[k] += v
-            tok_by_model[mname][k] += v
     # list_events: если есть событие result - итоги берём из него (usage в assistant промежуточный)
     rres = [r["result"] for r in recs if r["kind"] == "result"]
     if rres:
@@ -341,7 +297,6 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None, pric
         known = lambda key: [x[key] for x in rres if x[key] is not None]
         res["итог_сессии"] = {
             "результатов": len(rres), "модели": sorted({m for x in rres for m in x["models"]}),
-            "стоимость_usd": round(sum(known("cost")), 6) if known("cost") else None,
             "длительность_мс": int(sum(known("duration_ms"))) if known("duration_ms") else None,
             "ходов": int(sum(known("num_turns"))) if known("num_turns") else None}
     else:
@@ -349,52 +304,6 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None, pric
     res["токены"] = {"вывод": tot["output_tokens"], "вход_без_кэша": tot["input_tokens"],
                      "вход_кэш_чтение": tot["cache_read_input_tokens"],
                      "вход_кэш_запись": tot["cache_creation_input_tokens"]}
-
-    # стоимость: итог из журнала (result), если есть; иначе оценка по ценам модели за 1 млн токенов
-    pr = tuple(prices) if prices else None
-    logged = [r["cost"] for r in recs if r["kind"] == "logcost"]
-    state = [r["cost"] for r in recs if r["kind"] == "coststate"]
-    it = res["итог_сессии"]
-    est_names = []
-    if rres and not by_id:           # list_events: токены из result; модель - из modelUsage
-        mods = sorted({m for x in rres for m in x["models"]})
-        tok_by_model = {model_prices(mods[0] if mods else None): tot}
-    if pr:
-        cost = (tot["input_tokens"] * pr[0] + tot["output_tokens"] * pr[1]
-                + tot["cache_read_input_tokens"] * pr[2]
-                + tot["cache_creation_input_tokens"] * pr[3]) / 1e6
-        est_names = ["заданным через --prices (" + ",".join(f"{x:g}" for x in pr) + ")"]
-    else:
-        cost = 0.0
-        for (nm, mp, note), t in tok_by_model.items():
-            if not any(t.values()):
-                continue
-            cost += (t["input_tokens"] * mp[0] + t["output_tokens"] * mp[1]
-                     + t["cache_read_input_tokens"] * mp[2]
-                     + t["cache_creation_input_tokens"] * mp[3]) / 1e6
-            est_names.append(nm + (f" [{note}]" if note else ""))
-        if not est_names:
-            est_names = [DEFAULT_PRICES_NAME]
-    estimate = cost
-    if logged:
-        cost, src = sum(logged), "из журнала"
-    elif it and it["стоимость_usd"] is not None:
-        cost, src = it["стоимость_usd"], "из журнала"
-    else:
-        src = "оценка"
-    res["стоимость"] = {"usd": round(cost, 6), "источник": src}
-    if src == "оценка":
-        res["стоимость"]["цены"] = ", ".join(est_names)
-    if state:                        # cost-state: накопительный итог сессии, берём последний
-        j = state[-1]
-        sc = res["стоимость"]
-        sc["по_журналу"] = round(j, 6)
-        sc["оценка"] = round(estimate, 6)
-        if j > 0 and abs(estimate - j) / j > COST_WARN:
-            sc["предупреждение"] = (f"оценка ${estimate:.2f} и журнал ${j:.2f} расходятся на "
-                                    f"{abs(estimate - j) / j * 100:.0f}% (>{int(COST_WARN * 100)}%): "
-                                    f"проверь цены модели или --prices; cost-state включает и "
-                                    f"субагентов, чьих сообщений в этом журнале нет")
 
     res["ходы_пользователя"] = sum(1 for r in recs if r["human"])
     ids = {r["msg_id"] or f"_line{r['n']}" for r in recs if r["kind"] == "assistant"}
@@ -486,7 +395,7 @@ def analyze(role: str, recs, total, skipped, roles, since=None, until=None, pric
                 else:
                     addr[(other, role)] += 1
     res["адресаты"] = [{"от": a, "кому": b, "раз": c} for (a, b), c in addr.items()]
-    res["однообразная_работа"] = RW.find_repeats(recs, model_prices, pr)
+    res["однообразная_работа"] = RW.find_repeats(recs)
     res["фоновые"] = background_tasks(recs, ref)
     return res
 
@@ -530,7 +439,7 @@ def _dur(sec: int) -> str:
     return f"{h}ч {m:02d}м" if h else (f"{m}м {s:02d}с" if m else f"{s}с")
 
 
-def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
+def render_text(results) -> str:
     L = []
     for r in results:
         tk = r["токены"]
@@ -543,21 +452,11 @@ def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
             bits = []
             if it["модели"]:
                 bits.append("модель " + ", ".join(it["модели"]))
-            if it["стоимость_usd"] is not None:
-                bits.append(f"стоимость ${it['стоимость_usd']}")
             if it["длительность_мс"] is not None:
                 bits.append(f"длительность {_dur(it['длительность_мс'] // 1000)}")
             if it["ходов"] is not None:
                 bits.append(f"ходов модели {it['ходов']}")
             L.append("итог сессии (из события result, токены выше - оттуда же): " + "; ".join(bits))
-        c = r["стоимость"]
-        price_name = c.get("цены") or prices_name
-        L.append(f"стоимость: ${c['usd']:.2f} (" + ("из журнала" if c["источник"] == "из журнала"
-                 else f"оценка по ценам {price_name}") + ")")
-        if "по_журналу" in c:
-            L.append(f"  по журналу (cost-state): ${c['по_журналу']:.2f}; оценка по токенам: ${c['оценка']:.2f}")
-        if c.get("предупреждение"):
-            L.append("  ВНИМАНИЕ: " + c["предупреждение"])
         tools = ", ".join(f"{n} {c}" for n, c in r["инструменты"]) or "нет"
         L.append(f"инструменты (всего {r['вызовов_инструментов']}, топ-5): {tools}")
         ed = ", ".join(f"{p} ({c})" for p, c in r.get("изменённые_файлы", [])) or "нет"
@@ -607,7 +506,6 @@ def render_text(results, prices_name=DEFAULT_PRICES_NAME) -> str:
     L.extend(RW.render_candidates(results))
     L.append("")
     addr = [a for r in results for a in r["адресаты"]]
-    L.append(f"ИТОГО стоимость ансамбля: ${sum(r['стоимость']['usd'] for r in results):.2f}")
     if addr:
         L.append("")
         agg = Counter()
@@ -665,8 +563,6 @@ def main(argv=None) -> int:
     s.add_argument("--since")
     s.add_argument("--until")
     s.add_argument("--json", action="store_true")
-    s.add_argument("--prices", help="цены за 1 млн токенов: вход,вывод,чтение_кэша,запись_кэша "
-                   "(по умолчанию - по модели из журнала, см. MODEL_PRICES; неизвестная - Haiku 4.5: 1,5,0.10,1.25)")
     sh = sub.add_parser("show")
     sh.add_argument("ref", help="роль#N")
     sh.add_argument("target", help="путь или роль=путь")
@@ -681,24 +577,14 @@ def main(argv=None) -> int:
             pairs.append((role, path))
         roles = [r for r, _ in pairs]
         since, until = _iso(a.since), _iso(a.until)
-        prices, pname = None, DEFAULT_PRICES_NAME
-        if a.prices:
-            try:
-                prices = tuple(float(x) for x in a.prices.split(","))
-            except ValueError:
-                prices = ()
-            if len(prices) != 4:
-                raise SystemExit("--prices: ожидалось 4 числа: вход,вывод,чтение_кэша,запись_кэша")
-            pname = "заданным через --prices (" + a.prices + ")"
         results = []
         for role, path in pairs:
             recs, total, skipped = read_journal(path)
-            results.append(analyze(role, recs, total, skipped, roles, since, until, prices))
+            results.append(analyze(role, recs, total, skipped, roles, since, until))
         if a.json:
-            tc = round(sum(r["стоимость"]["usd"] for r in results), 6)
-            print(json.dumps({"роли": results, "total_cost_usd": tc}, ensure_ascii=False, indent=2))
+            print(json.dumps({"роли": results}, ensure_ascii=False, indent=2))
         else:
-            print(render_text(results, pname), end="")
+            print(render_text(results), end="")
         return 0
 
     m = re.fullmatch(r"(.*)#(\d+)", a.ref)

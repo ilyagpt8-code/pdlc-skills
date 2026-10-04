@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Прогресс по метрикам журнала ансамбля - для продюсера.
 
-Запуск: python tools/progress.py <journal.md> [--stats stats.md] [--budget-usd X] [--target 0]
+Запуск: python tools/progress.py <journal.md> [--stats stats.md] [--target 0]
 Разбирает строки:
   метрика: имя=число [источник: ...]
   отрезок N: [метрика] имя=число (было число) [источник], токены за отрезок=число, всего=число
@@ -31,8 +31,6 @@ WALL_FACTOR = 3.0     # стена: потрачено >= factor x медиан�
 WALL_TOKENS = 300000  # стена без истории прогресса: потрачено >= столько без заметного уменьшения
 JUMP = 0.40           # скачок значения - информационный флаг
 SKIP_NAMES = {"всего", "отрезок", "токены"}
-# Haiku 4.5, USD за токен
-P_IN, P_OUT, P_CR, P_CW = 1e-6, 5e-6, 0.10e-6, 1.25e-6
 
 
 def num(s):
@@ -179,9 +177,9 @@ def analyze_metric(points, target, min_step=MIN_STEP, min_tokens=MIN_TOKENS,
 
 
 def parse_stats(text: str):
-    """Из stats.md: токены (вывод, вход, кэш чтение/запись) и стоимость $ (если есть строка итога)."""
+    """Из stats.md: токены (вывод, вход, кэш чтение/запись)."""
     t = {"out": 0, "in": 0, "cr": 0, "cw": 0}
-    cost, found = 0.0, False
+    found = False
     for line in text.splitlines():
         m = re.match(r"\s*токены:\s*вывод\s+(\d+);\s*вход без кэша\s+(\d+);\s*вход через кэш:\s*"
                      r"чтение\s+(\d+),\s*запись\s+(\d+)", line)
@@ -191,10 +189,7 @@ def parse_stats(text: str):
             t["in"] += int(m.group(2))
             t["cr"] += int(m.group(3))
             t["cw"] += int(m.group(4))
-        c = re.search(r"итог сессии.*стоимость\s*\$\s*(\d+(?:\.\d+)?)", line)
-        if c:
-            cost += float(c.group(1))
-    return (t if found else None), (cost if cost > 0 else None)
+    return t if found else None
 
 
 def verdict(results, changed=None, target=0.0, min_step=MIN_STEP):
@@ -245,7 +240,6 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Прогресс по метрикам журнала")
     ap.add_argument("journal")
     ap.add_argument("--stats", help="stats.md от session_stats.py")
-    ap.add_argument("--budget-usd", type=float)
     ap.add_argument("--target", type=float, default=0.0)
     ap.add_argument("--min-step", type=float, default=MIN_STEP,
                     help="порог медленного шага: доля уменьшения (по умолчанию 0.035)")
@@ -307,43 +301,18 @@ def main(argv=None) -> int:
     if nosrc:
         L.append("БЕЗ ИСТОЧНИКА: строки журнала " + ", ".join(map(str, nosrc[:10])))
     seg_tokens = sum(p["tokens"] or 0 for p in pts if p["kind"] == "seg")
-    t, cost = None, None
+    t = None
     if a.stats:
         try:
             stats_text = Path(a.stats).read_text(encoding="utf-8", errors="replace")
-            t, cost = parse_stats(stats_text)
-            # session_stats считает стоимость по модели каждой роли — она точнее оценки по ценам Haiku
-            m_total = re.search(r"ИТОГО стоимость ансамбля:\s*\$([0-9.]+)", stats_text)
-            if m_total:
-                cost = float(m_total.group(1))
+            t = parse_stats(stats_text)
         except OSError:
             L.append(f"stats не прочитан: {a.stats}")
-    est = False
-    if cost is None and t:
-        cost = t["out"] * P_OUT + t["in"] * P_IN + t["cr"] * P_CR + t["cw"] * P_CW
-        est = True
     if t:
         L.append(f"Токены (числа из stats.md): вывод {t['out']}, вход {t['in']}, кэш чтение {t['cr']}, запись {t['cw']}")
-        L.append("  подсказка: в строку отрезка бери токены и стоимость отсюда.")
+        L.append("  подсказка: в строку отрезка бери токены отсюда.")
     if seg_tokens:
         L.append(f"Токены по строкам отрезков: {seg_tokens}")
-    if cost is not None:
-        L.append(f"Стоимость: ${cost:.2f}" + (" (оценка по ценам Haiku 4.5)" if est else ""))
-    if a.budget_usd is not None:
-        main_r = results.get(cur) if cur and "ЦЕЛЬ" not in results[cur]["flags"] else None
-        nseg = max([p["seg"] for p in pts if p["seg"]] + [len(r["vals"]) for r in results.values()] + [0])
-        if cost is None:
-            L.append("Бюджет: стоимость неизвестна - дай --stats.")
-        elif main_r is None:
-            L.append(f"Бюджет ${a.budget_usd:.2f}: цель достигнута, потрачено ${cost:.2f}.")
-        elif main_r["left"] is None or not nseg:
-            L.append(f"Бюджет ${a.budget_usd:.2f}: потрачено ${cost:.2f}; прогноза нет, цель не приближается.")
-        else:
-            per = cost / nseg
-            need = per * main_r["left"]
-            ok = cost + need <= a.budget_usd
-            L.append(f"Бюджет ${a.budget_usd:.2f}: потрачено ${cost:.2f}, до цели ещё ~${need:.2f} "
-                     f"({main_r['left']} отрезк. по ${per:.2f}) - " + ("хватит." if ok else "НЕ хватит."))
     L.append("вывод: " + verdict(results, changed, a.target, a.min_step))
     print("\n".join(L))
     return 0
